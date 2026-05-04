@@ -72,6 +72,9 @@ public class RestTable {
 
     public static RestResponse buildResponse(Table table, RestChannel channel) throws Exception {
         RestRequest request = channel.request();
+        if (request.hasParam("summarize")) {
+            table = TableSummarizer.summarize(table, request.param("summarize"), request.param("h"));
+        }
         MediaType mediaType = getXContentType(request);
         if (mediaType != null) {
             return buildXContentBuilder(table, channel);

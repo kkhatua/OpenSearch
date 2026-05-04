@@ -357,4 +357,6 @@ public class RestTableTests extends OpenSearchTestCase {
         table.addCell("epoch", "alias:t");
         table.endHeaders();
     }
+
+    // --- Summarize tests moved to TableSummarizerTests when buildSummarizedTable was extracted ---
 }
