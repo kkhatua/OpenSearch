@@ -72,11 +72,12 @@ public class RestTable {
 
     public static RestResponse buildResponse(Table table, RestChannel channel) throws Exception {
         RestRequest request = channel.request();
+        Table summarizedTable = TableSummarizer.summarize(table, request.param("h"));
         MediaType mediaType = getXContentType(request);
         if (mediaType != null) {
-            return buildXContentBuilder(table, channel);
+            return buildXContentBuilder(summarizedTable, channel);
         }
-        return buildTextPlainResponse(table, channel);
+        return buildTextPlainResponse(summarizedTable, channel);
     }
 
     private static MediaType getXContentType(RestRequest request) {
