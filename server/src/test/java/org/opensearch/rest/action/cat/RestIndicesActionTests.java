@@ -309,4 +309,75 @@ public class RestIndicesActionTests extends OpenSearchTestCase {
             fail("Timestamp string is not a valid ISO-8601 date: " + timestampString);
         }
     }
+
+    public void testBuildTableWithLimit() {
+        final ClusterSettings clusterSettings = new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS);
+        final Settings settings = Settings.builder().build();
+        final ResponseLimitSettings responseLimitSettings = new ResponseLimitSettings(clusterSettings, settings);
+        final RestIndicesAction action = new RestIndicesAction(responseLimitSettings);
+
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+
+        final Table table = action.buildTable(
+            request,
+            indicesSettings,
+            indicesHealths,
+            indicesStats,
+            indicesMetadatas,
+            action.getTableIterator(new String[0], indicesSettings),
+            null
+        );
+
+        assertNotNull(table);
+        assertThat(table.getRows().size(), equalTo(1));
+    }
+
+    public void testBuildTableWithLimitAndSort() {
+        final ClusterSettings clusterSettings = new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS);
+        final Settings settings = Settings.builder().build();
+        final ResponseLimitSettings responseLimitSettings = new ResponseLimitSettings(clusterSettings, settings);
+        final RestIndicesAction action = new RestIndicesAction(responseLimitSettings);
+
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("s", "index");
+
+        final Table table = action.buildTable(
+            request,
+            indicesSettings,
+            indicesHealths,
+            indicesStats,
+            indicesMetadatas,
+            action.getTableIterator(new String[0], indicesSettings),
+            null
+        );
+
+        assertNotNull(table);
+        assertThat(table.getRows().size(), equalTo(indicesMetadatas.size()));
+    }
+
+    public void testBuildTableWithLimitAndAggregation() {
+        final ClusterSettings clusterSettings = new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS);
+        final Settings settings = Settings.builder().build();
+        final ResponseLimitSettings responseLimitSettings = new ResponseLimitSettings(clusterSettings, settings);
+        final RestIndicesAction action = new RestIndicesAction(responseLimitSettings);
+
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("h", "sum(pri)");
+
+        final Table table = action.buildTable(
+            request,
+            indicesSettings,
+            indicesHealths,
+            indicesStats,
+            indicesMetadatas,
+            action.getTableIterator(new String[0], indicesSettings),
+            null
+        );
+
+        assertNotNull(table);
+        assertThat(table.getRows().size(), equalTo(indicesMetadatas.size()));
+    }
 }

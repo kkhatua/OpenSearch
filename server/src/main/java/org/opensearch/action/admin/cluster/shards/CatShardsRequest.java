@@ -32,6 +32,9 @@ public class CatShardsRequest extends ClusterManagerNodeReadRequest<CatShardsReq
     private TimeValue cancelAfterTimeInterval;
     private PageParams pageParams = null;
     private boolean requestLimitCheckSupported;
+    private int limit = -1;
+    private boolean hasSort = false;
+    private boolean hasAggregation = false;
 
     public CatShardsRequest() {}
 
@@ -105,5 +108,29 @@ public class CatShardsRequest extends ClusterManagerNodeReadRequest<CatShardsReq
     @Override
     public ClusterAdminTask createTask(long id, String type, String action, TaskId parentTaskId, Map<String, String> headers) {
         return new ClusterAdminTask(id, type, action, parentTaskId, headers, this.cancelAfterTimeInterval);
+    }
+
+    public void setLimit(int limit) {
+        this.limit = limit;
+    }
+
+    public int getLimit() {
+        return this.limit;
+    }
+
+    public void setHasSort(boolean hasSort) {
+        this.hasSort = hasSort;
+    }
+
+    public boolean hasSort() {
+        return this.hasSort;
+    }
+
+    public void setHasAggregation(boolean hasAggregation) {
+        this.hasAggregation = hasAggregation;
+    }
+
+    public boolean hasAggregation() {
+        return this.hasAggregation;
     }
 }

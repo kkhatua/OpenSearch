@@ -49,6 +49,7 @@ import org.opensearch.indices.recovery.RecoveryState;
 import org.opensearch.indices.replication.common.ReplicationLuceneIndex;
 import org.opensearch.indices.replication.common.ReplicationTimer;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.test.rest.FakeRestRequest;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -237,4 +238,128 @@ public class RestRecoveryActionTests extends OpenSearchTestCase {
         return String.format(Locale.ROOT, "%1.1f%%", percent);
     }
 
+    public void testBuildRecoveryTableWithLimit() {
+        final RestCatRecoveryAction action = new RestCatRecoveryAction();
+        final Map<String, List<RecoveryState>> shardRecoveryStates = new HashMap<>();
+
+        final List<RecoveryState> recoveryStates = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            final RecoveryState state = mock(RecoveryState.class);
+            when(state.getShardId()).thenReturn(new ShardId(new Index("index", "_na_"), i));
+            final ReplicationTimer timer = mock(ReplicationTimer.class);
+            when(timer.startTime()).thenReturn(0L);
+            when(timer.time()).thenReturn(1000L);
+            when(timer.stopTime()).thenReturn(1000L);
+            when(state.getTimer()).thenReturn(timer);
+            when(state.getRecoverySource()).thenReturn(TestShardRouting.randomRecoverySource());
+            when(state.getStage()).thenReturn(RecoveryState.Stage.DONE);
+            when(state.getSourceNode()).thenReturn(null);
+            final DiscoveryNode targetNode = mock(DiscoveryNode.class);
+            when(targetNode.getHostName()).thenReturn("target");
+            when(state.getTargetNode()).thenReturn(targetNode);
+            ReplicationLuceneIndex index = new ReplicationLuceneIndex();
+            when(state.getIndex()).thenReturn(index);
+            final RecoveryState.Translog translog = mock(RecoveryState.Translog.class);
+            when(translog.recoveredOperations()).thenReturn(0);
+            when(translog.totalOperations()).thenReturn(0);
+            when(state.getTranslog()).thenReturn(translog);
+            final RecoveryState.VerifyIndex verifyIndex = mock(RecoveryState.VerifyIndex.class);
+            when(verifyIndex.checkIndexTime()).thenReturn(0L);
+            when(state.getVerifyIndex()).thenReturn(verifyIndex);
+            recoveryStates.add(state);
+        }
+        shardRecoveryStates.put("index", recoveryStates);
+        final RecoveryResponse response = new RecoveryResponse(2, 2, 0, shardRecoveryStates, List.of());
+
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+
+        Table table = action.buildRecoveryTable(request, response);
+        assertNotNull(table);
+        assertEquals(1, table.getRows().size());
+    }
+
+    public void testBuildRecoveryTableWithLimitAndSort() {
+        final RestCatRecoveryAction action = new RestCatRecoveryAction();
+        final Map<String, List<RecoveryState>> shardRecoveryStates = new HashMap<>();
+
+        final List<RecoveryState> recoveryStates = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            final RecoveryState state = mock(RecoveryState.class);
+            when(state.getShardId()).thenReturn(new ShardId(new Index("index", "_na_"), i));
+            final ReplicationTimer timer = mock(ReplicationTimer.class);
+            when(timer.startTime()).thenReturn(0L);
+            when(timer.time()).thenReturn(1000L);
+            when(timer.stopTime()).thenReturn(1000L);
+            when(state.getTimer()).thenReturn(timer);
+            when(state.getRecoverySource()).thenReturn(TestShardRouting.randomRecoverySource());
+            when(state.getStage()).thenReturn(RecoveryState.Stage.DONE);
+            when(state.getSourceNode()).thenReturn(null);
+            final DiscoveryNode targetNode = mock(DiscoveryNode.class);
+            when(targetNode.getHostName()).thenReturn("target");
+            when(state.getTargetNode()).thenReturn(targetNode);
+            ReplicationLuceneIndex index = new ReplicationLuceneIndex();
+            when(state.getIndex()).thenReturn(index);
+            final RecoveryState.Translog translog = mock(RecoveryState.Translog.class);
+            when(translog.recoveredOperations()).thenReturn(0);
+            when(translog.totalOperations()).thenReturn(0);
+            when(state.getTranslog()).thenReturn(translog);
+            final RecoveryState.VerifyIndex verifyIndex = mock(RecoveryState.VerifyIndex.class);
+            when(verifyIndex.checkIndexTime()).thenReturn(0L);
+            when(state.getVerifyIndex()).thenReturn(verifyIndex);
+            recoveryStates.add(state);
+        }
+        shardRecoveryStates.put("index", recoveryStates);
+        final RecoveryResponse response = new RecoveryResponse(2, 2, 0, shardRecoveryStates, List.of());
+
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("s", "shard");
+
+        Table table = action.buildRecoveryTable(request, response);
+        assertNotNull(table);
+        assertEquals(2, table.getRows().size());
+    }
+
+    public void testBuildRecoveryTableWithLimitAndAggregation() {
+        final RestCatRecoveryAction action = new RestCatRecoveryAction();
+        final Map<String, List<RecoveryState>> shardRecoveryStates = new HashMap<>();
+
+        final List<RecoveryState> recoveryStates = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            final RecoveryState state = mock(RecoveryState.class);
+            when(state.getShardId()).thenReturn(new ShardId(new Index("index", "_na_"), i));
+            final ReplicationTimer timer = mock(ReplicationTimer.class);
+            when(timer.startTime()).thenReturn(0L);
+            when(timer.time()).thenReturn(1000L);
+            when(timer.stopTime()).thenReturn(1000L);
+            when(state.getTimer()).thenReturn(timer);
+            when(state.getRecoverySource()).thenReturn(TestShardRouting.randomRecoverySource());
+            when(state.getStage()).thenReturn(RecoveryState.Stage.DONE);
+            when(state.getSourceNode()).thenReturn(null);
+            final DiscoveryNode targetNode = mock(DiscoveryNode.class);
+            when(targetNode.getHostName()).thenReturn("target");
+            when(state.getTargetNode()).thenReturn(targetNode);
+            ReplicationLuceneIndex index = new ReplicationLuceneIndex();
+            when(state.getIndex()).thenReturn(index);
+            final RecoveryState.Translog translog = mock(RecoveryState.Translog.class);
+            when(translog.recoveredOperations()).thenReturn(0);
+            when(translog.totalOperations()).thenReturn(0);
+            when(state.getTranslog()).thenReturn(translog);
+            final RecoveryState.VerifyIndex verifyIndex = mock(RecoveryState.VerifyIndex.class);
+            when(verifyIndex.checkIndexTime()).thenReturn(0L);
+            when(state.getVerifyIndex()).thenReturn(verifyIndex);
+            recoveryStates.add(state);
+        }
+        shardRecoveryStates.put("index", recoveryStates);
+        final RecoveryResponse response = new RecoveryResponse(2, 2, 0, shardRecoveryStates, List.of());
+
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("h", "count(shard)");
+
+        Table table = action.buildRecoveryTable(request, response);
+        assertNotNull(table);
+        assertEquals(2, table.getRows().size());
+    }
 }

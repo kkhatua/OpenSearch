@@ -9,8 +9,9 @@
 package org.opensearch.rest.action.cat;
 
 import org.opensearch.common.Table;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.core.common.unit.ByteSizeValue;
+import org.opensearch.test.OpenSearchTestCase;
+
 import java.util.List;
 
 public class TableSummarizerTests extends OpenSearchTestCase {
@@ -152,8 +153,7 @@ public class TableSummarizerTests extends OpenSearchTestCase {
     private String getAttrString(Table.Cell cell) {
         StringBuilder sb = new StringBuilder();
         for (java.util.Map.Entry<String, String> entry : cell.attr.entrySet()) {
-            if (sb.length() > 0)
-                sb.append(";");
+            if (sb.length() > 0) sb.append(";");
             sb.append(entry.getKey()).append(":").append(entry.getValue());
         }
         return sb.toString();

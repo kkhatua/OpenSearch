@@ -19,6 +19,7 @@ import org.opensearch.action.support.HandledTransportAction;
 import org.opensearch.action.support.TimeoutTaskCancellationUtility;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.common.breaker.ResponseLimitBreachedException;
 import org.opensearch.common.breaker.ResponseLimitSettings;
 import org.opensearch.common.inject.Inject;
@@ -102,16 +103,31 @@ public class TransportCatShardsAction extends HandledTransportAction<CatShardsRe
                             clusterStateResponse
                         );
                         catShardsResponse.setNodes(clusterStateResponse.getState().getNodes());
-                        catShardsResponse.setResponseShards(
-                            Objects.isNull(paginationStrategy)
-                                ? clusterStateResponse.getState().routingTable().allShards()
-                                : paginationStrategy.getRequestedEntities()
-                        );
+
+                        List<ShardRouting> responseShards = Objects.isNull(paginationStrategy)
+                            ? clusterStateResponse.getState().routingTable().allShards()
+                            : paginationStrategy.getRequestedEntities();
+
+                        int limit = shardsRequest.getLimit();
+                        boolean shouldOptimize = limit >= 0 && shardsRequest.hasSort() == false && shardsRequest.hasAggregation() == false;
+                        if (shouldOptimize && limit < responseShards.size()) {
+                            responseShards = responseShards.subList(0, limit);
+                        }
+
+                        catShardsResponse.setResponseShards(responseShards);
                         catShardsResponse.setPageToken(Objects.isNull(paginationStrategy) ? null : paginationStrategy.getResponseToken());
 
-                        String[] indices = Objects.isNull(paginationStrategy)
-                            ? shardsRequest.getIndices()
-                            : filterClosedIndices(clusterStateResponse.getState(), paginationStrategy.getRequestedIndices());
+                        String[] indices;
+                        if (Objects.isNull(paginationStrategy)) {
+                            if (shouldOptimize) {
+                                indices = responseShards.stream().map(ShardRouting::getIndexName).distinct().toArray(String[]::new);
+                            } else {
+                                indices = shardsRequest.getIndices();
+                            }
+                        } else {
+                            indices = filterClosedIndices(clusterStateResponse.getState(), paginationStrategy.getRequestedIndices());
+                        }
+
                         // For paginated queries, if strategy outputs no shards to be returned, avoid fetching IndicesStats.
                         if (shouldSkipIndicesStatsRequest(paginationStrategy, indices)) {
                             catShardsResponse.setIndicesStatsResponse(IndicesStatsResponse.getEmptyResponse());

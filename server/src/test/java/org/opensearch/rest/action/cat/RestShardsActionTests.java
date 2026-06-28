@@ -178,4 +178,38 @@ public class RestShardsActionTests extends OpenSearchTestCase {
             assertThat(row.get(92).value, equalTo(shardStats.getStats().getDocs().getDeleted()));
         }
     }
+
+    public void testBuildTableWithLimit() {
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+
+        assertFalse(shardRoutings.isEmpty());
+
+        final RestShardsAction action = new RestShardsAction();
+        final Table table = action.buildTable(request, state.getState().nodes(), stats, shardRoutings, null);
+
+        assertThat(table.getRows().size(), equalTo(1));
+    }
+
+    public void testBuildTableWithLimitAndSort() {
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("s", "shard");
+
+        final RestShardsAction action = new RestShardsAction();
+        final Table table = action.buildTable(request, state.getState().nodes(), stats, shardRoutings, null);
+
+        assertThat(table.getRows().size(), equalTo(shardRoutings.size()));
+    }
+
+    public void testBuildTableWithLimitAndAggregation() {
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("h", "sum(docs)");
+
+        final RestShardsAction action = new RestShardsAction();
+        final Table table = action.buildTable(request, state.getState().nodes(), stats, shardRoutings, null);
+
+        assertThat(table.getRows().size(), equalTo(shardRoutings.size()));
+    }
 }

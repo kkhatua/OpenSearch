@@ -291,6 +291,72 @@ public class RestTableTests extends OpenSearchTestCase {
         assertEquals(Arrays.asList(1, 0, 2), rowOrder);
     }
 
+    public void testLimit() {
+        Table table = new Table();
+        table.startHeaders();
+        table.addCell("col");
+        table.endHeaders();
+        for (int i = 0; i < 5; i++) {
+            table.startRow();
+            table.addCell(i);
+            table.endRow();
+        }
+        restRequest.params().put("limit", "3");
+        List<Integer> rowOrder = RestTable.getRowOrder(table, restRequest);
+        assertEquals(Arrays.asList(0, 1, 2), rowOrder);
+    }
+
+    public void testLimitGreaterThanSize() {
+        Table table = new Table();
+        table.startHeaders();
+        table.addCell("col");
+        table.endHeaders();
+        for (int i = 0; i < 3; i++) {
+            table.startRow();
+            table.addCell(i);
+            table.endRow();
+        }
+        restRequest.params().put("limit", "10");
+        List<Integer> rowOrder = RestTable.getRowOrder(table, restRequest);
+        assertEquals(Arrays.asList(0, 1, 2), rowOrder);
+    }
+
+    public void testLimitWithSort() {
+        Table table = new Table();
+        table.startHeaders();
+        table.addCell("col");
+        table.endHeaders();
+        for (int i = 0; i < 5; i++) {
+            table.startRow();
+            table.addCell(i);
+            table.endRow();
+        }
+        restRequest.params().put("s", "col:desc");
+        restRequest.params().put("limit", "2");
+        List<Integer> rowOrder = RestTable.getRowOrder(table, restRequest);
+        assertEquals(Arrays.asList(4, 3), rowOrder);
+    }
+
+    public void testInvalidLimitNegative() {
+        Table table = new Table();
+        table.startHeaders();
+        table.addCell("col");
+        table.endHeaders();
+        restRequest.params().put("limit", "-2");
+        Exception e = expectThrows(IllegalArgumentException.class, () -> RestTable.getRowOrder(table, restRequest));
+        assertEquals("Parameter [limit] must be non-negative", e.getMessage());
+    }
+
+    public void testInvalidLimitNotNumber() {
+        Table table = new Table();
+        table.startHeaders();
+        table.addCell("col");
+        table.endHeaders();
+        restRequest.params().put("limit", "abc");
+        Exception e = expectThrows(IllegalArgumentException.class, () -> RestTable.getRowOrder(table, restRequest));
+        assertTrue(e.getMessage().contains("Failed to parse int parameter [limit]"));
+    }
+
     private RestResponse assertResponseContentType(Map<String, List<String>> headers, String mediaType) throws Exception {
         return assertResponseContentType(headers, mediaType, table);
     }

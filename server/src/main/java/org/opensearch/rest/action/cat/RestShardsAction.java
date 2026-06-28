@@ -123,6 +123,10 @@ public class RestShardsAction extends AbstractListAction {
         shardsRequest.setIndices(indices);
         shardsRequest.setRequestLimitCheckSupported(isRequestLimitCheckSupported());
         shardsRequest.setPageParams(pageParams);
+        int limit = request.paramAsInt("limit", -1);
+        shardsRequest.setLimit(limit);
+        shardsRequest.setHasSort(request.hasParam("s"));
+        shardsRequest.setHasAggregation(TableSummarizer.hasAggregation(request.param("h")));
         parseDeprecatedMasterTimeoutParameter(shardsRequest, request, deprecationLogger, getName());
         return channel -> client.execute(CatShardsAction.INSTANCE, shardsRequest, new RestResponseListener<CatShardsResponse>(channel) {
             @Override
@@ -377,7 +381,13 @@ public class RestShardsAction extends AbstractListAction {
     ) {
         Table table = getTableWithHeader(request, pageToken);
 
-        for (ShardRouting shard : responseShards) {
+        List<ShardRouting> shardsToProcess = responseShards;
+        int limit = request.paramAsInt("limit", -1);
+        if (limit >= 0 && request.hasParam("s") == false && TableSummarizer.hasAggregation(request.param("h")) == false) {
+            shardsToProcess = responseShards.subList(0, Math.min(limit, responseShards.size()));
+        }
+
+        for (ShardRouting shard : shardsToProcess) {
             ShardStats shardStats = stats.asMap().get(shard);
             CommonStats commonStats = null;
             CommitStats commitStats = null;

@@ -36,6 +36,7 @@ import org.opensearch.action.ActionRequest;
 import org.opensearch.action.ActionType;
 import org.opensearch.action.admin.cluster.node.tasks.list.ListTasksResponse;
 import org.opensearch.cluster.node.DiscoveryNodes;
+import org.opensearch.common.Table;
 import org.opensearch.common.collect.MapBuilder;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.action.ActionResponse;
@@ -100,5 +101,130 @@ public class RestTasksActionTests extends OpenSearchTestCase {
                 listener.onResponse((Response) new ListTasksResponse(List.of(taskInfo), emptyList(), emptyList()));
             }
         };
+    }
+
+    public void testBuildTableWithLimit() {
+        RestTasksAction action = new RestTasksAction(() -> DiscoveryNodes.EMPTY_NODES);
+
+        final TaskInfo task1 = new TaskInfo(
+            new TaskId("node1", 1),
+            "type1",
+            "action1",
+            "desc1",
+            null,
+            1000L,
+            2000L,
+            false,
+            false,
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            null
+        );
+        final TaskInfo task2 = new TaskInfo(
+            new TaskId("node2", 2),
+            "type2",
+            "action2",
+            "desc2",
+            null,
+            1000L,
+            2000L,
+            false,
+            false,
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            null
+        );
+
+        ListTasksResponse response = new ListTasksResponse(List.of(task1, task2), emptyList(), emptyList());
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+
+        Table table = action.buildTable(request, response);
+        assertNotNull(table);
+        assertEquals(1, table.getRows().size());
+    }
+
+    public void testBuildTableWithLimitAndSort() {
+        RestTasksAction action = new RestTasksAction(() -> DiscoveryNodes.EMPTY_NODES);
+
+        final TaskInfo task1 = new TaskInfo(
+            new TaskId("node1", 1),
+            "type1",
+            "action1",
+            "desc1",
+            null,
+            1000L,
+            2000L,
+            false,
+            false,
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            null
+        );
+        final TaskInfo task2 = new TaskInfo(
+            new TaskId("node2", 2),
+            "type2",
+            "action2",
+            "desc2",
+            null,
+            1000L,
+            2000L,
+            false,
+            false,
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            null
+        );
+
+        ListTasksResponse response = new ListTasksResponse(List.of(task1, task2), emptyList(), emptyList());
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("s", "action");
+
+        Table table = action.buildTable(request, response);
+        assertNotNull(table);
+        assertEquals(2, table.getRows().size());
+    }
+
+    public void testBuildTableWithLimitAndAggregation() {
+        RestTasksAction action = new RestTasksAction(() -> DiscoveryNodes.EMPTY_NODES);
+
+        final TaskInfo task1 = new TaskInfo(
+            new TaskId("node1", 1),
+            "type1",
+            "action1",
+            "desc1",
+            null,
+            1000L,
+            2000L,
+            false,
+            false,
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            null
+        );
+        final TaskInfo task2 = new TaskInfo(
+            new TaskId("node2", 2),
+            "type2",
+            "action2",
+            "desc2",
+            null,
+            1000L,
+            2000L,
+            false,
+            false,
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            null
+        );
+
+        ListTasksResponse response = new ListTasksResponse(List.of(task1, task2), emptyList(), emptyList());
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("h", "count(action)");
+
+        Table table = action.buildTable(request, response);
+        assertNotNull(table);
+        assertEquals(2, table.getRows().size());
     }
 }

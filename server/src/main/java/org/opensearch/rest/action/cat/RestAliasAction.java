@@ -111,9 +111,18 @@ public class RestAliasAction extends AbstractCatAction {
     private Table buildTable(RestRequest request, GetAliasesResponse response) {
         Table table = getTableWithHeader(request);
 
+        int limit = request == null ? -1 : request.paramAsInt("limit", -1);
+        boolean shouldOptimize = limit >= 0
+            && request != null
+            && request.hasParam("s") == false
+            && TableSummarizer.hasAggregation(request.param("h")) == false;
+
         for (final Map.Entry<String, List<AliasMetadata>> cursor : response.getAliases().entrySet()) {
             String indexName = cursor.getKey();
             for (AliasMetadata aliasMetadata : cursor.getValue()) {
+                if (shouldOptimize && table.getRows().size() >= limit) {
+                    return table;
+                }
                 table.startRow();
                 table.addCell(aliasMetadata.alias());
                 table.addCell(indexName);

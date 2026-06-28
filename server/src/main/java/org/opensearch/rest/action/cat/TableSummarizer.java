@@ -14,7 +14,6 @@ import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.unit.ByteSizeValue;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +27,18 @@ import java.util.regex.Pattern;
 public class TableSummarizer {
 
     private static final Pattern AGGREGATION_PATTERN = Pattern.compile("^(sum|count|avg|min|max)\\((.*?)\\)$");
+
+    public static boolean hasAggregation(String headersParam) {
+        if (headersParam == null || headersParam.isEmpty()) {
+            return false;
+        }
+        for (String header : headersParam.split(",")) {
+            if (AGGREGATION_PATTERN.matcher(header.trim()).matches()) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     public static Table summarize(Table table, String headersParam) {
         if (headersParam == null || headersParam.isEmpty()) {
@@ -92,7 +103,7 @@ public class TableSummarizer {
             }
             GroupKey key = new GroupKey(groupValues);
             GroupData data = groups.computeIfAbsent(key, k -> new GroupData(resolvedAggs.size()));
-            
+
             for (int i = 0; i < resolvedAggs.size(); i++) {
                 AggregationInfo aggInfo = resolvedAggs.get(i);
                 Object val = null;
@@ -281,16 +292,19 @@ public class TableSummarizer {
                 return new SizeValue(num.longValue());
             } else if (sampleValue instanceof TimeValue) {
                 return new TimeValue(num.longValue());
-            } else if (sampleValue instanceof Long || sampleValue instanceof Integer || sampleValue instanceof Short || sampleValue instanceof Byte) {
-                return num.longValue();
-            } else if (sampleValue instanceof String) {
-                // If it was parsed from a string, maybe it's just a number
-                if (num == num.longValue()) {
-                    return String.valueOf(num.longValue());
-                } else {
-                    return String.format("%.2f", num); // Simple float formatting
+            } else if (sampleValue instanceof Long
+                || sampleValue instanceof Integer
+                || sampleValue instanceof Short
+                || sampleValue instanceof Byte) {
+                    return num.longValue();
+                } else if (sampleValue instanceof String) {
+                    // If it was parsed from a string, maybe it's just a number
+                    if (num == num.longValue()) {
+                        return String.valueOf(num.longValue());
+                    } else {
+                        return String.format("%.2f", num); // Simple float formatting
+                    }
                 }
-            }
             return num;
         }
     }

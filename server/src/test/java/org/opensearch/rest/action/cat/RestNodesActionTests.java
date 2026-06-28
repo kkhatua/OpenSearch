@@ -141,4 +141,69 @@ public class RestNodesActionTests extends OpenSearchTestCase {
 
         verificationFunction.accept(table);
     }
+
+    public void testBuildTableWithLimit() {
+        ClusterName clusterName = new ClusterName("cluster-1");
+        DiscoveryNodes.Builder builder = DiscoveryNodes.builder();
+        builder.add(new DiscoveryNode("node-1", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT));
+        builder.add(new DiscoveryNode("node-2", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT));
+        DiscoveryNodes discoveryNodes = builder.build();
+        ClusterState clusterState = mock(ClusterState.class);
+        when(clusterState.nodes()).thenReturn(discoveryNodes);
+
+        ClusterStateResponse clusterStateResponse = new ClusterStateResponse(clusterName, clusterState, false);
+        NodesInfoResponse nodesInfoResponse = new NodesInfoResponse(clusterName, Collections.emptyList(), Collections.emptyList());
+        NodesStatsResponse nodesStatsResponse = new NodesStatsResponse(clusterName, Collections.emptyList(), Collections.emptyList());
+
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+
+        Table table = action.buildTable(false, request, clusterStateResponse, nodesInfoResponse, nodesStatsResponse);
+        assertNotNull(table);
+        assertEquals(1, table.getRows().size());
+    }
+
+    public void testBuildTableWithLimitAndSort() {
+        ClusterName clusterName = new ClusterName("cluster-1");
+        DiscoveryNodes.Builder builder = DiscoveryNodes.builder();
+        builder.add(new DiscoveryNode("node-1", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT));
+        builder.add(new DiscoveryNode("node-2", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT));
+        DiscoveryNodes discoveryNodes = builder.build();
+        ClusterState clusterState = mock(ClusterState.class);
+        when(clusterState.nodes()).thenReturn(discoveryNodes);
+
+        ClusterStateResponse clusterStateResponse = new ClusterStateResponse(clusterName, clusterState, false);
+        NodesInfoResponse nodesInfoResponse = new NodesInfoResponse(clusterName, Collections.emptyList(), Collections.emptyList());
+        NodesStatsResponse nodesStatsResponse = new NodesStatsResponse(clusterName, Collections.emptyList(), Collections.emptyList());
+
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("s", "name");
+
+        Table table = action.buildTable(false, request, clusterStateResponse, nodesInfoResponse, nodesStatsResponse);
+        assertNotNull(table);
+        assertEquals(2, table.getRows().size());
+    }
+
+    public void testBuildTableWithLimitAndAggregation() {
+        ClusterName clusterName = new ClusterName("cluster-1");
+        DiscoveryNodes.Builder builder = DiscoveryNodes.builder();
+        builder.add(new DiscoveryNode("node-1", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT));
+        builder.add(new DiscoveryNode("node-2", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT));
+        DiscoveryNodes discoveryNodes = builder.build();
+        ClusterState clusterState = mock(ClusterState.class);
+        when(clusterState.nodes()).thenReturn(discoveryNodes);
+
+        ClusterStateResponse clusterStateResponse = new ClusterStateResponse(clusterName, clusterState, false);
+        NodesInfoResponse nodesInfoResponse = new NodesInfoResponse(clusterName, Collections.emptyList(), Collections.emptyList());
+        NodesStatsResponse nodesStatsResponse = new NodesStatsResponse(clusterName, Collections.emptyList(), Collections.emptyList());
+
+        FakeRestRequest request = new FakeRestRequest();
+        request.params().put("limit", "1");
+        request.params().put("h", "count(name)");
+
+        Table table = action.buildTable(false, request, clusterStateResponse, nodesInfoResponse, nodesStatsResponse);
+        assertNotNull(table);
+        assertEquals(2, table.getRows().size());
+    }
 }

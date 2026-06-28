@@ -137,7 +137,8 @@ public class RestTable {
         boolean verbose = request.paramAsBoolean("v", false);
 
         List<DisplayHeader> headers = buildDisplayHeaders(table, request);
-        int[] width = buildWidths(table, request, verbose, headers);
+        List<Integer> rowOrder = getRowOrder(table, request);
+        int[] width = buildWidths(table, request, verbose, headers, rowOrder);
 
         BytesStream bytesOut = Streams.flushOnCloseStream(channel.bytesOutput());
         UTF8StreamWriter out = new UTF8StreamWriter().setOutput(bytesOut);
@@ -153,8 +154,6 @@ public class RestTable {
             }
             out.append("\n");
         }
-
-        List<Integer> rowOrder = getRowOrder(table, request);
 
         for (Integer row : rowOrder) {
             for (int col = 0; col < headers.size(); col++) {
@@ -206,6 +205,15 @@ public class RestTable {
             }
             Collections.sort(rowOrder, new TableIndexComparator(table, ordering));
         }
+
+        int limit = request.paramAsInt("limit", -1);
+        if (request.hasParam("limit") && limit < 0) {
+            throw new IllegalArgumentException("Parameter [limit] must be non-negative");
+        }
+        if (limit >= 0 && limit < rowOrder.size()) {
+            rowOrder = rowOrder.subList(0, limit);
+        }
+
         return rowOrder;
     }
 
@@ -331,7 +339,13 @@ public class RestTable {
         return width;
     }
 
-    private static int[] buildWidths(Table table, RestRequest request, boolean verbose, List<DisplayHeader> headers) {
+    private static int[] buildWidths(
+        Table table,
+        RestRequest request,
+        boolean verbose,
+        List<DisplayHeader> headers,
+        List<Integer> rowOrder
+    ) {
         int[] width = new int[headers.size()];
         int i;
 
@@ -348,7 +362,9 @@ public class RestTable {
 
         i = 0;
         for (DisplayHeader hdr : headers) {
-            for (Table.Cell cell : table.getAsMap().get(hdr.name)) {
+            List<Table.Cell> cells = table.getAsMap().get(hdr.name);
+            for (Integer row : rowOrder) {
+                Table.Cell cell = cells.get(row);
                 String v = renderValue(request, cell.value);
                 int vWidth = v == null ? 0 : v.length();
                 if (width[i] < vWidth) {

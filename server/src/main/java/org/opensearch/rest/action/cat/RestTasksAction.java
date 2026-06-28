@@ -184,21 +184,31 @@ public class RestTasksAction extends AbstractCatAction {
         table.endRow();
     }
 
-    private void buildGroups(Table table, boolean fullId, boolean detailed, List<TaskGroup> taskGroups) {
+    private void buildGroups(Table table, boolean fullId, boolean detailed, List<TaskGroup> taskGroups, int limit, boolean shouldOptimize) {
+        if (shouldOptimize && table.getRows().size() >= limit) {
+            return;
+        }
         DiscoveryNodes discoveryNodes = nodesInCluster.get();
         List<TaskGroup> sortedGroups = new ArrayList<>(taskGroups);
         sortedGroups.sort(Comparator.comparingLong(o -> o.getTaskInfo().getStartTime()));
         for (TaskGroup taskGroup : sortedGroups) {
+            if (shouldOptimize && table.getRows().size() >= limit) {
+                return;
+            }
             buildRow(table, fullId, detailed, discoveryNodes, taskGroup.getTaskInfo());
-            buildGroups(table, fullId, detailed, taskGroup.getChildTasks());
+            buildGroups(table, fullId, detailed, taskGroup.getChildTasks(), limit, shouldOptimize);
         }
     }
 
-    private Table buildTable(RestRequest request, ListTasksResponse listTasksResponse) {
+    Table buildTable(RestRequest request, ListTasksResponse listTasksResponse) {
         boolean fullId = request.paramAsBoolean("full_id", false);
         boolean detailed = request.paramAsBoolean("detailed", false);
         Table table = getTableWithHeader(request);
-        buildGroups(table, fullId, detailed, listTasksResponse.getTaskGroups());
+        int limit = request.paramAsInt("limit", -1);
+        boolean shouldOptimize = limit >= 0
+            && request.hasParam("s") == false
+            && TableSummarizer.hasAggregation(request.param("h")) == false;
+        buildGroups(table, fullId, detailed, listTasksResponse.getTaskGroups(), limit, shouldOptimize);
         return table;
     }
 }

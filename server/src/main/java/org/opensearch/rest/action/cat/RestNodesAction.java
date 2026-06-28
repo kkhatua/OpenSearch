@@ -432,7 +432,16 @@ public class RestNodesAction extends AbstractCatAction {
         String clusterManagerId = nodes.getClusterManagerNodeId();
         Table table = getTableWithHeader(req);
 
+        int limit = req == null ? -1 : req.paramAsInt("limit", -1);
+        boolean shouldOptimize = limit >= 0
+            && req != null
+            && req.hasParam("s") == false
+            && TableSummarizer.hasAggregation(req.param("h")) == false;
+
         for (DiscoveryNode node : nodes) {
+            if (shouldOptimize && table.getRows().size() >= limit) {
+                break;
+            }
             NodeInfo info = nodesInfo.getNodesMap().get(node.getId());
             NodeStats stats = nodesStats.getNodesMap().get(node.getId());
 

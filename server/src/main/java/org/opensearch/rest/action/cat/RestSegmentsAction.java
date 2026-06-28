@@ -167,6 +167,12 @@ public class RestSegmentsAction extends AbstractCatAction {
     private Table buildTable(final RestRequest request, ClusterStateResponse state, Map<String, IndexSegments> indicesSegments) {
         Table table = getTableWithHeader(request);
 
+        int limit = request == null ? -1 : request.paramAsInt("limit", -1);
+        boolean shouldOptimize = limit >= 0
+            && request != null
+            && request.hasParam("s") == false
+            && TableSummarizer.hasAggregation(request.param("h")) == false;
+
         DiscoveryNodes nodes = state.getState().nodes();
 
         for (IndexSegments indexSegments : indicesSegments.values()) {
@@ -179,6 +185,9 @@ public class RestSegmentsAction extends AbstractCatAction {
                     List<Segment> segments = shardSegment.getSegments();
 
                     for (Segment segment : segments) {
+                        if (shouldOptimize && table.getRows().size() >= limit) {
+                            return table;
+                        }
                         table.startRow();
 
                         table.addCell(shardSegment.getShardRouting().getIndexName());
