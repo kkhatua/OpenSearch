@@ -125,6 +125,7 @@ public class RestShardsAction extends AbstractListAction {
         shardsRequest.setRequestLimitCheckSupported(isRequestLimitCheckSupported());
         shardsRequest.setPageParams(pageParams);
         shardsRequest.setIndicesStatsRequired(requestNeedsIndicesStats(request));
+        applyRoutingTopKPushdown(request, shardsRequest);
         parseDeprecatedMasterTimeoutParameter(shardsRequest, request, deprecationLogger, getName());
         return channel -> client.execute(CatShardsAction.INSTANCE, shardsRequest, new RestResponseListener<CatShardsResponse>(channel) {
             @Override
@@ -141,6 +142,105 @@ public class RestShardsAction extends AbstractListAction {
                 );
             }
         });
+    }
+
+    /**
+     * Subset of routing-only columns that the transport action knows how to sort directly on
+     * {@link org.opensearch.cluster.routing.ShardRouting} / {@link org.opensearch.cluster.node.DiscoveryNodes}
+     * (no per-shard stats required). Multi-column sort, sort on stats columns, and any column
+     * outside this set are NOT eligible for top-K pushdown and fall back to the standard path
+     * (coordinator-side heap from Phase 1).
+     */
+    static final Set<String> ROUTING_SORTABLE_COLUMNS = Set.of(
+        "index",
+        "i",
+        "idx",
+        "shard",
+        "s",
+        "sh",
+        "prirep",
+        "p",
+        "pr",
+        "primaryOrReplica",
+        "state",
+        "st",
+        "node",
+        "n",
+        "ip",
+        "id"
+    );
+
+    /**
+     * When the request is eligible — single-column sort on a routing-derivable column with a
+     * positive limit, no pagination override — populate (routingSortColumn, routingSortDescending,
+     * responseLimit) on the request so the transport action can perform top-K shard selection
+     * before issuing the IndicesStats broadcast.
+     *
+     * Package-private for testing.
+     */
+    static void applyRoutingTopKPushdown(RestRequest request, CatShardsRequest shardsRequest) {
+        String sParam = request.param("s");
+        int limit = request.paramAsInt("limit", -1);
+        if (limit <= 0 || sParam == null || sParam.isEmpty()) {
+            return;
+        }
+        // Multi-column sort disqualifies: only single-column eligible for routing pushdown.
+        String[] tokens = Strings.splitStringByCommaToArray(sParam);
+        if (tokens.length != 1) {
+            return;
+        }
+        String token = tokens[0].trim();
+        boolean descending = false;
+        if (token.endsWith(":desc")) {
+            descending = true;
+            token = token.substring(0, token.length() - 5);
+        } else if (token.endsWith(":asc")) {
+            token = token.substring(0, token.length() - 4);
+        }
+        if (token.indexOf('*') >= 0 || token.indexOf('?') >= 0) {
+            return;
+        }
+        if (ROUTING_SORTABLE_COLUMNS.contains(token) == false) {
+            return;
+        }
+        // Resolve aliases to canonical names so the transport action only handles canonical keys.
+        String canonical = canonicalRoutingColumn(token);
+        if (canonical == null) {
+            return;
+        }
+        shardsRequest.setRoutingSortColumn(canonical);
+        shardsRequest.setRoutingSortDescending(descending);
+        shardsRequest.setResponseLimit(limit);
+    }
+
+    private static String canonicalRoutingColumn(String token) {
+        switch (token) {
+            case "index":
+            case "i":
+            case "idx":
+                return "index";
+            case "shard":
+            case "s":
+            case "sh":
+                return "shard";
+            case "prirep":
+            case "p":
+            case "pr":
+            case "primaryOrReplica":
+                return "prirep";
+            case "state":
+            case "st":
+                return "state";
+            case "node":
+            case "n":
+                return "node";
+            case "ip":
+                return "ip";
+            case "id":
+                return "id";
+            default:
+                return null;
+        }
     }
 
     /**

@@ -199,6 +199,75 @@ public class RestShardsActionTests extends OpenSearchTestCase {
         assertTrue(RestShardsAction.requestNeedsIndicesStats(req));
     }
 
+    // --- Phase 3: routing-only top-K pushdown tests ---
+
+    public void testRoutingPushdownAppliedForSingleColumnSort() {
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("s", "index:desc");
+        req.params().put("limit", "5");
+        org.opensearch.action.admin.cluster.shards.CatShardsRequest sr = new org.opensearch.action.admin.cluster.shards.CatShardsRequest();
+        RestShardsAction.applyRoutingTopKPushdown(req, sr);
+        assertEquals("index", sr.getRoutingSortColumn());
+        assertTrue(sr.isRoutingSortDescending());
+        assertEquals(5, sr.getResponseLimit());
+    }
+
+    public void testRoutingPushdownAliasResolvedToCanonical() {
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("s", "n"); // alias for node
+        req.params().put("limit", "3");
+        org.opensearch.action.admin.cluster.shards.CatShardsRequest sr = new org.opensearch.action.admin.cluster.shards.CatShardsRequest();
+        RestShardsAction.applyRoutingTopKPushdown(req, sr);
+        assertEquals("node", sr.getRoutingSortColumn());
+        assertFalse(sr.isRoutingSortDescending());
+    }
+
+    public void testRoutingPushdownSkippedForMultiColumnSort() {
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("s", "index,shard");
+        req.params().put("limit", "5");
+        org.opensearch.action.admin.cluster.shards.CatShardsRequest sr = new org.opensearch.action.admin.cluster.shards.CatShardsRequest();
+        RestShardsAction.applyRoutingTopKPushdown(req, sr);
+        assertNull(sr.getRoutingSortColumn());
+        assertEquals(-1, sr.getResponseLimit());
+    }
+
+    public void testRoutingPushdownSkippedForStatsColumn() {
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("s", "docs:desc");
+        req.params().put("limit", "5");
+        org.opensearch.action.admin.cluster.shards.CatShardsRequest sr = new org.opensearch.action.admin.cluster.shards.CatShardsRequest();
+        RestShardsAction.applyRoutingTopKPushdown(req, sr);
+        assertNull(sr.getRoutingSortColumn());
+    }
+
+    public void testRoutingPushdownSkippedWithoutLimit() {
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("s", "index");
+        // no limit param
+        org.opensearch.action.admin.cluster.shards.CatShardsRequest sr = new org.opensearch.action.admin.cluster.shards.CatShardsRequest();
+        RestShardsAction.applyRoutingTopKPushdown(req, sr);
+        assertNull(sr.getRoutingSortColumn());
+    }
+
+    public void testRoutingPushdownSkippedWithoutSort() {
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "5");
+        // no s= param
+        org.opensearch.action.admin.cluster.shards.CatShardsRequest sr = new org.opensearch.action.admin.cluster.shards.CatShardsRequest();
+        RestShardsAction.applyRoutingTopKPushdown(req, sr);
+        assertNull(sr.getRoutingSortColumn());
+    }
+
+    public void testRoutingPushdownSkippedForWildcardSort() {
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("s", "index*");
+        req.params().put("limit", "5");
+        org.opensearch.action.admin.cluster.shards.CatShardsRequest sr = new org.opensearch.action.admin.cluster.shards.CatShardsRequest();
+        RestShardsAction.applyRoutingTopKPushdown(req, sr);
+        assertNull(sr.getRoutingSortColumn());
+    }
+
     private void assertTable(Table table) {
         // now, verify the table is correct
         List<Table.Cell> headers = table.getHeaders();
