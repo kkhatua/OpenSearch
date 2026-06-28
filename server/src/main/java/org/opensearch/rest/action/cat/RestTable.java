@@ -59,6 +59,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.Set;
 
 import static org.opensearch.action.pagination.PageToken.PAGINATED_RESPONSE_NEXT_TOKEN_KEY;
@@ -180,15 +181,15 @@ public class RestTable {
 
     static List<Integer> getRowOrder(Table table, RestRequest request) {
         String[] columnOrdering = request.paramAsStringArray("s", null);
+        int rowCount = table.getRows().size();
+        int limit = request.paramAsInt("limit", -1);
+        boolean hasLimit = limit > 0;
 
-        List<Integer> rowOrder = new ArrayList<>();
-        for (int i = 0; i < table.getRows().size(); i++) {
-            rowOrder.add(i);
-        }
-
+        // Parse sort spec first (preserves the unknown-sort-key error behavior even when there are no rows)
+        List<ColumnOrderElement> ordering = null;
         if (columnOrdering != null) {
             Map<String, String> headerAliasMap = table.getAliasMap();
-            List<ColumnOrderElement> ordering = new ArrayList<>();
+            ordering = new ArrayList<>(columnOrdering.length);
             for (int i = 0; i < columnOrdering.length; i++) {
                 String columnHeader = columnOrdering[i];
                 boolean reverse = false;
@@ -206,15 +207,49 @@ public class RestTable {
                     );
                 }
             }
-            Collections.sort(rowOrder, new TableIndexComparator(table, ordering));
         }
 
-        // Apply the limit parameter (if positive). Applied after sort so `?s=field:desc&limit=N`
-        // yields the top-N rows by the sort key. This also caps unsummarized responses.
-        int limit = request.paramAsInt("limit", -1);
-        if (limit > 0 && rowOrder.size() > limit) {
-            rowOrder = new ArrayList<>(rowOrder.subList(0, limit));
+        // Fast path: no sort. If limit is set, just take the first `limit` rows in insertion order.
+        if (ordering == null) {
+            int upper = hasLimit ? Math.min(limit, rowCount) : rowCount;
+            List<Integer> rowOrder = new ArrayList<>(upper);
+            for (int i = 0; i < upper; i++) {
+                rowOrder.add(i);
+            }
+            return rowOrder;
         }
+
+        TableIndexComparator cmp = new TableIndexComparator(table, ordering);
+        // Tie-break by row index ascending. This matches the stable behavior of Collections.sort
+        // (which preserves insertion order for equal elements when the input is [0,1,...,N-1]),
+        // so the heap-based top-N path is observably equivalent to a full sort + truncate.
+        Comparator<Integer> sortCmp = cmp.thenComparingInt(i -> i);
+
+        // Top-N path: when limit is set and meaningfully smaller than rowCount, use a bounded
+        // priority queue to select top-N in O(N log K) instead of sorting all N rows in O(N log N).
+        if (hasLimit && limit < rowCount) {
+            // Min-heap by reversed comparator: the head is the WORST of the current top-N candidates.
+            PriorityQueue<Integer> heap = new PriorityQueue<>(limit, sortCmp.reversed());
+            for (int i = 0; i < rowCount; i++) {
+                if (heap.size() < limit) {
+                    heap.offer(i);
+                } else if (sortCmp.compare(i, heap.peek()) < 0) {
+                    heap.poll();
+                    heap.offer(i);
+                }
+            }
+            // Drain heap and sort ascending by sortCmp to produce the final ordered top-N slice.
+            List<Integer> topN = new ArrayList<>(heap);
+            topN.sort(sortCmp);
+            return topN;
+        }
+
+        // Standard path: full sort. Used when there is no limit or when limit >= rowCount.
+        List<Integer> rowOrder = new ArrayList<>(rowCount);
+        for (int i = 0; i < rowCount; i++) {
+            rowOrder.add(i);
+        }
+        Collections.sort(rowOrder, cmp);
         return rowOrder;
     }
 

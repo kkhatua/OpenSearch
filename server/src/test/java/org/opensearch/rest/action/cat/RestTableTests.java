@@ -399,6 +399,53 @@ public class RestTableTests extends OpenSearchTestCase {
         return table;
     }
 
+    /**
+     * Regression test for the top-N heap optimization in getRowOrder.
+     * For a sort + small limit, results MUST be identical to a full sort followed by truncation.
+     * We compare against the known-correct full-sort result by running the same input with no limit.
+     */
+    public void testTopNHeapMatchesFullSort() {
+        Table table = new Table();
+        table.startHeaders();
+        table.addCell("v");
+        table.endHeaders();
+        // Larger, varied input so the heap path is actually exercised.
+        List<Integer> values = Arrays.asList(17, 3, 42, 8, 23, 1, 42, 15, 6, 31, 9, 4, 20, 12, 28);
+        for (Integer v : values) {
+            table.startRow();
+            table.addCell(v);
+            table.endRow();
+        }
+
+        // Full sort (no limit) as the source of truth.
+        FakeRestRequest fullReq = new FakeRestRequest();
+        fullReq.params().put("s", "v:desc");
+        List<Integer> fullSorted = RestTable.getRowOrder(table, fullReq);
+
+        for (int k = 1; k <= values.size(); k++) {
+            FakeRestRequest topKReq = new FakeRestRequest();
+            topKReq.params().put("s", "v:desc");
+            topKReq.params().put("limit", Integer.toString(k));
+            List<Integer> topK = RestTable.getRowOrder(table, topKReq);
+
+            assertThat("limit=" + k + " should return min(k, N) rows", topK.size(), equalTo(Math.min(k, values.size())));
+            // The top-K must equal the first K of the full sort (by row index, which encodes order).
+            assertEquals("top-" + k + " should match prefix of full sort", fullSorted.subList(0, topK.size()), topK);
+        }
+    }
+
+    /**
+     * The unknown-sort-key error must still be raised even when limit is set (parsing happens
+     * before the optimized path branches).
+     */
+    public void testTopNHeapStillValidatesSortKey() {
+        Table table = buildSimpleSortableTable();
+        restRequest.params().put("s", "not_a_column");
+        restRequest.params().put("limit", "5");
+        Exception e = expectThrows(UnsupportedOperationException.class, () -> RestTable.getRowOrder(table, restRequest));
+        assertEquals("Unable to sort by unknown sort key `not_a_column`", e.getMessage());
+    }
+
     private RestResponse assertResponseContentType(Map<String, List<String>> headers, String mediaType) throws Exception {
         return assertResponseContentType(headers, mediaType, table);
     }
