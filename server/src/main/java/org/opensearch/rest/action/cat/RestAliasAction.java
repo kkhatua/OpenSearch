@@ -110,10 +110,21 @@ public class RestAliasAction extends AbstractCatAction {
 
     private Table buildTable(RestRequest request, GetAliasesResponse response) {
         Table table = getTableWithHeader(request);
+        int limit = request.paramAsInt("limit", -1);
+        // Early-exit when limit is set and the response is not modified by sort/summarize:
+        // skip building rows beyond `limit`, since the table-level pipeline would discard them
+        // anyway. Sort and summarize must see all rows to be correct, so we don't short-circuit
+        // in those cases.
+        boolean shouldOptimize = limit >= 0
+            && request.hasParam("s") == false
+            && TableSummarizer.hasAggregation(request.param("h")) == false;
 
         for (final Map.Entry<String, List<AliasMetadata>> cursor : response.getAliases().entrySet()) {
             String indexName = cursor.getKey();
             for (AliasMetadata aliasMetadata : cursor.getValue()) {
+                if (shouldOptimize && table.getRows().size() >= limit) {
+                    return table;
+                }
                 table.startRow();
                 table.addCell(aliasMetadata.alias());
                 table.addCell(indexName);

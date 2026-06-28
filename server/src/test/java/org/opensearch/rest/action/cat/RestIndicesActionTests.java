@@ -309,4 +309,61 @@ public class RestIndicesActionTests extends OpenSearchTestCase {
             fail("Timestamp string is not a valid ISO-8601 date: " + timestampString);
         }
     }
+
+    // --- Phase B: per-endpoint early-exit tests ---
+
+    private RestIndicesAction newAction() {
+        final ClusterSettings clusterSettings = new ClusterSettings(Settings.EMPTY, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS);
+        return new RestIndicesAction(new ResponseLimitSettings(clusterSettings, Settings.EMPTY));
+    }
+
+    public void testBuildTableEarlyExitOnLimit() {
+        final RestIndicesAction action = newAction();
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        final Table table = action.buildTable(
+            req,
+            indicesSettings,
+            indicesHealths,
+            indicesStats,
+            indicesMetadatas,
+            action.getTableIterator(new String[0], indicesSettings),
+            null
+        );
+        assertEquals(1, table.getRows().size());
+    }
+
+    public void testBuildTableLimitNoOptimizationWithSort() {
+        final RestIndicesAction action = newAction();
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("s", "index");
+        final Table table = action.buildTable(
+            req,
+            indicesSettings,
+            indicesHealths,
+            indicesStats,
+            indicesMetadatas,
+            action.getTableIterator(new String[0], indicesSettings),
+            null
+        );
+        assertEquals(indicesMetadatas.size(), table.getRows().size());
+    }
+
+    public void testBuildTableLimitNoOptimizationWithAggregation() {
+        final RestIndicesAction action = newAction();
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("h", "sum(pri)");
+        final Table table = action.buildTable(
+            req,
+            indicesSettings,
+            indicesHealths,
+            indicesStats,
+            indicesMetadatas,
+            action.getTableIterator(new String[0], indicesSettings),
+            null
+        );
+        assertEquals(indicesMetadatas.size(), table.getRows().size());
+    }
 }

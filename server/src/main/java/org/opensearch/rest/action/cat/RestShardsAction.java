@@ -565,8 +565,15 @@ public class RestShardsAction extends AbstractListAction {
         PageToken pageToken
     ) {
         Table table = getTableWithHeader(request, pageToken);
+        int limit = request.paramAsInt("limit", -1);
+        boolean shouldOptimize = limit >= 0
+            && request.hasParam("s") == false
+            && TableSummarizer.hasAggregation(request.param("h")) == false;
 
         for (ShardRouting shard : responseShards) {
+            if (shouldOptimize && table.getRows().size() >= limit) {
+                break;
+            }
             ShardStats shardStats = stats.asMap().get(shard);
             CommonStats commonStats = null;
             CommitStats commitStats = null;

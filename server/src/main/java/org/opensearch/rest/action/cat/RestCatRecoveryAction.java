@@ -144,6 +144,11 @@ public class RestCatRecoveryAction extends AbstractCatAction {
     public Table buildRecoveryTable(RestRequest request, RecoveryResponse response) {
 
         Table t = getTableWithHeader(request);
+        int limit = request == null ? -1 : request.paramAsInt("limit", -1);
+        boolean shouldOptimize = limit >= 0
+            && request != null
+            && request.hasParam("s") == false
+            && TableSummarizer.hasAggregation(request.param("h")) == false;
 
         for (String index : response.shardRecoveryStates().keySet()) {
 
@@ -169,6 +174,9 @@ public class RestCatRecoveryAction extends AbstractCatAction {
             });
 
             for (RecoveryState state : shardRecoveryStates) {
+                if (shouldOptimize && t.getRows().size() >= limit) {
+                    return t;
+                }
                 t.startRow();
                 t.addCell(index);
                 t.addCell(state.getShardId().id());

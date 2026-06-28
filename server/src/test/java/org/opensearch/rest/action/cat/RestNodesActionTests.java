@@ -141,4 +141,65 @@ public class RestNodesActionTests extends OpenSearchTestCase {
 
         verificationFunction.accept(table);
     }
+
+    // --- Phase B: per-endpoint early-exit tests ---
+
+    private static ClusterStateResponse twoNodeClusterStateResponse() {
+        ClusterName clusterName = new ClusterName("cluster-1");
+        DiscoveryNodes.Builder builder = DiscoveryNodes.builder();
+        builder.add(new DiscoveryNode("node-1", randomTransportAddress(), emptyMap(), emptySet(), Version.CURRENT));
+        builder.add(new DiscoveryNode("node-2", randomTransportAddress(), emptyMap(), emptySet(), Version.CURRENT));
+        DiscoveryNodes discoveryNodes = builder.build();
+        ClusterState clusterState = mock(ClusterState.class);
+        when(clusterState.nodes()).thenReturn(discoveryNodes);
+        return new ClusterStateResponse(clusterName, clusterState, false);
+    }
+
+    private static org.opensearch.core.common.transport.TransportAddress randomTransportAddress() {
+        try {
+            return new org.opensearch.core.common.transport.TransportAddress(
+                java.net.InetAddress.getLoopbackAddress(),
+                org.opensearch.test.OpenSearchTestCase.randomIntBetween(1024, 65535)
+            );
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void testBuildTableEarlyExitOnLimit() {
+        ClusterStateResponse cs = twoNodeClusterStateResponse();
+        NodesInfoResponse info = new NodesInfoResponse(cs.getClusterName(), Collections.emptyList(), Collections.emptyList());
+        NodesStatsResponse statsR = new NodesStatsResponse(cs.getClusterName(), Collections.emptyList(), Collections.emptyList());
+
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        Table table = action.buildTable(false, req, cs, info, statsR);
+        assertEquals(1, table.getRows().size());
+    }
+
+    public void testBuildTableLimitNoOptimizationWithSort() {
+        ClusterStateResponse cs = twoNodeClusterStateResponse();
+        NodesInfoResponse info = new NodesInfoResponse(cs.getClusterName(), Collections.emptyList(), Collections.emptyList());
+        NodesStatsResponse statsR = new NodesStatsResponse(cs.getClusterName(), Collections.emptyList(), Collections.emptyList());
+
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("s", "name");
+        Table table = action.buildTable(false, req, cs, info, statsR);
+        // With sort, all 2 rows must be present so the downstream sort+limit is correct.
+        assertEquals(2, table.getRows().size());
+    }
+
+    public void testBuildTableLimitNoOptimizationWithAggregation() {
+        ClusterStateResponse cs = twoNodeClusterStateResponse();
+        NodesInfoResponse info = new NodesInfoResponse(cs.getClusterName(), Collections.emptyList(), Collections.emptyList());
+        NodesStatsResponse statsR = new NodesStatsResponse(cs.getClusterName(), Collections.emptyList(), Collections.emptyList());
+
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("h", "count(name)");
+        Table table = action.buildTable(false, req, cs, info, statsR);
+        // With aggregation, all rows must be present so summarize sees the full set.
+        assertEquals(2, table.getRows().size());
+    }
 }

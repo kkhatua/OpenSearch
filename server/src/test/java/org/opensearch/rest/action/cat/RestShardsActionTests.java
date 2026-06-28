@@ -268,6 +268,47 @@ public class RestShardsActionTests extends OpenSearchTestCase {
         assertNull(sr.getRoutingSortColumn());
     }
 
+    // --- Phase B: per-endpoint early-exit tests ---
+
+    public void testBuildTableEarlyExitOnLimit() {
+        // Force a known shard count by passing 0 — actually, randomIntBetween(1, 5) gives 1..5, so
+        // we just assert size <= limit when limit < count. Use limit=1 (always valid).
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        final RestShardsAction action = new RestShardsAction();
+        final Table table = action.buildTable(req, state.getState().nodes(), stats, shardRoutings, null);
+        assertThat(table.getRows().size(), equalTo(Math.min(1, shardRoutings.size())));
+    }
+
+    public void testBuildTableLimitZeroProducesNoRows() {
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "0");
+        final RestShardsAction action = new RestShardsAction();
+        final Table table = action.buildTable(req, state.getState().nodes(), stats, shardRoutings, null);
+        assertThat(table.getRows().size(), equalTo(0));
+    }
+
+    public void testBuildTableLimitNoOptimizationWithSort() {
+        // With s= set, the early-exit must NOT fire — sort needs every row to produce correct top-N.
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("s", "shard");
+        final RestShardsAction action = new RestShardsAction();
+        final Table table = action.buildTable(req, state.getState().nodes(), stats, shardRoutings, null);
+        // All shards present in the table; RestTable.getRowOrder applies the final limit downstream.
+        assertThat(table.getRows().size(), equalTo(shardRoutings.size()));
+    }
+
+    public void testBuildTableLimitNoOptimizationWithAggregation() {
+        // With an aggregation func in h=, the early-exit must NOT fire — summarize needs every row.
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("h", "index,sum(docs)");
+        final RestShardsAction action = new RestShardsAction();
+        final Table table = action.buildTable(req, state.getState().nodes(), stats, shardRoutings, null);
+        assertThat(table.getRows().size(), equalTo(shardRoutings.size()));
+    }
+
     private void assertTable(Table table) {
         // now, verify the table is correct
         List<Table.Cell> headers = table.getHeaders();

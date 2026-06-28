@@ -237,4 +237,67 @@ public class RestRecoveryActionTests extends OpenSearchTestCase {
         return String.format(Locale.ROOT, "%1.1f%%", percent);
     }
 
+    // --- Phase B: per-endpoint early-exit tests ---
+
+    private Map<String, List<RecoveryState>> buildTwoShardStates() {
+        Map<String, List<RecoveryState>> shardRecoveryStates = new HashMap<>();
+        final List<RecoveryState> recoveryStates = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            final RecoveryState state = mock(RecoveryState.class);
+            when(state.getShardId()).thenReturn(new ShardId(new org.opensearch.core.index.Index("idx", "_na_"), i));
+            final ReplicationTimer timer = mock(ReplicationTimer.class);
+            when(timer.startTime()).thenReturn(0L);
+            when(timer.time()).thenReturn(1000L);
+            when(timer.stopTime()).thenReturn(1000L);
+            when(state.getTimer()).thenReturn(timer);
+            when(state.getRecoverySource()).thenReturn(TestShardRouting.randomRecoverySource());
+            when(state.getStage()).thenReturn(RecoveryState.Stage.DONE);
+            when(state.getSourceNode()).thenReturn(null);
+            final DiscoveryNode targetNode = mock(DiscoveryNode.class);
+            when(targetNode.getHostName()).thenReturn("target");
+            when(state.getTargetNode()).thenReturn(targetNode);
+            ReplicationLuceneIndex index = new ReplicationLuceneIndex();
+            when(state.getIndex()).thenReturn(index);
+            final RecoveryState.Translog translog = mock(RecoveryState.Translog.class);
+            when(translog.recoveredOperations()).thenReturn(0);
+            when(translog.totalOperations()).thenReturn(0);
+            when(state.getTranslog()).thenReturn(translog);
+            final RecoveryState.VerifyIndex verifyIndex = mock(RecoveryState.VerifyIndex.class);
+            when(verifyIndex.checkIndexTime()).thenReturn(0L);
+            when(state.getVerifyIndex()).thenReturn(verifyIndex);
+            recoveryStates.add(state);
+        }
+        shardRecoveryStates.put("idx", recoveryStates);
+        return shardRecoveryStates;
+    }
+
+    public void testBuildRecoveryTableEarlyExitOnLimit() {
+        RestCatRecoveryAction action = new RestCatRecoveryAction();
+        RecoveryResponse response = new RecoveryResponse(2, 2, 0, buildTwoShardStates(), List.of());
+        org.opensearch.test.rest.FakeRestRequest req = new org.opensearch.test.rest.FakeRestRequest();
+        req.params().put("limit", "1");
+        Table table = action.buildRecoveryTable(req, response);
+        assertEquals(1, table.getRows().size());
+    }
+
+    public void testBuildRecoveryTableLimitNoOptimizationWithSort() {
+        RestCatRecoveryAction action = new RestCatRecoveryAction();
+        RecoveryResponse response = new RecoveryResponse(2, 2, 0, buildTwoShardStates(), List.of());
+        org.opensearch.test.rest.FakeRestRequest req = new org.opensearch.test.rest.FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("s", "shard");
+        Table table = action.buildRecoveryTable(req, response);
+        assertEquals(2, table.getRows().size());
+    }
+
+    public void testBuildRecoveryTableLimitNoOptimizationWithAggregation() {
+        RestCatRecoveryAction action = new RestCatRecoveryAction();
+        RecoveryResponse response = new RecoveryResponse(2, 2, 0, buildTwoShardStates(), List.of());
+        org.opensearch.test.rest.FakeRestRequest req = new org.opensearch.test.rest.FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("h", "count(shard)");
+        Table table = action.buildRecoveryTable(req, response);
+        assertEquals(2, table.getRows().size());
+    }
+
 }

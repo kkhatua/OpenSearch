@@ -324,14 +324,19 @@ public class RestTableTests extends OpenSearchTestCase {
         assertThat(rowOrder.size(), equalTo(3));
     }
 
-    public void testLimitZeroOrNegativeIsIgnored() {
+    public void testLimitZeroReturnsNoRows() {
         Table table = buildSimpleSortableTable();
-        // limit=0 and any negative value are treated as "no limit" (only positive values apply).
+        // limit=0 is a legitimate request — return zero rows (no narrowing of negative).
         restRequest.params().put("limit", "0");
-        assertThat(RestTable.getRowOrder(table, restRequest).size(), equalTo(3));
+        assertThat(RestTable.getRowOrder(table, restRequest).size(), equalTo(0));
+    }
 
+    public void testNegativeLimitThrows() {
+        Table table = buildSimpleSortableTable();
+        // Explicit negative limit is rejected with a clear error rather than silently ignored.
         restRequest.params().put("limit", "-5");
-        assertThat(RestTable.getRowOrder(table, restRequest).size(), equalTo(3));
+        Exception e = expectThrows(IllegalArgumentException.class, () -> RestTable.getRowOrder(table, restRequest));
+        assertEquals("Parameter [limit] must be non-negative", e.getMessage());
     }
 
     public void testNoLimitParamReturnsAll() {
