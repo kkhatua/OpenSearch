@@ -144,7 +144,8 @@ public class RestTable {
         boolean verbose = request.paramAsBoolean("v", false);
 
         List<DisplayHeader> headers = buildDisplayHeaders(table, request);
-        int[] width = buildWidths(table, request, verbose, headers);
+        List<Integer> rowOrder = getRowOrder(table, request);
+        int[] width = buildWidths(table, request, verbose, headers, rowOrder);
 
         BytesStream bytesOut = Streams.flushOnCloseStream(channel.bytesOutput());
         UTF8StreamWriter out = new UTF8StreamWriter().setOutput(bytesOut);
@@ -160,8 +161,6 @@ public class RestTable {
             }
             out.append("\n");
         }
-
-        List<Integer> rowOrder = getRowOrder(table, request);
 
         for (Integer row : rowOrder) {
             for (int col = 0; col < headers.size(); col++) {
@@ -186,8 +185,20 @@ public class RestTable {
     static List<Integer> getRowOrder(Table table, RestRequest request) {
         String[] columnOrdering = request.paramAsStringArray("s", null);
         int rowCount = table.getRows().size();
-        int limit = request.paramAsInt("limit", -1);
-        boolean hasLimit = limit > 0;
+        // Explicit validation: if `limit` was supplied with a negative value, reject the request
+        // up-front rather than silently treating it as "no limit". `limit=0` is legitimate (return
+        // zero rows). Unset limit defaults to -1 below and the explicit-presence check guards
+        // against parser default ambiguity.
+        int limit;
+        if (request.hasParam("limit")) {
+            limit = request.paramAsInt("limit", -1);
+            if (limit < 0) {
+                throw new IllegalArgumentException("Parameter [limit] must be non-negative");
+            }
+        } else {
+            limit = -1;
+        }
+        boolean hasLimit = limit >= 0;
 
         // Parse sort spec first (preserves the unknown-sort-key error behavior even when there are no rows)
         List<ColumnOrderElement> ordering = null;
@@ -211,6 +222,13 @@ public class RestTable {
                     );
                 }
             }
+        }
+
+        // limit=0 => zero rows, regardless of sort. Handled after sort-spec parsing (so an unknown
+        // sort key is still rejected) but before the fast-path/heap logic below, both of which assume
+        // a positive limit — in particular PriorityQueue requires an initial capacity >= 1.
+        if (hasLimit && limit == 0) {
+            return new ArrayList<>();
         }
 
         // Fast path: no sort. If limit is set, just take the first `limit` rows in insertion order.
@@ -379,7 +397,13 @@ public class RestTable {
         return width;
     }
 
-    private static int[] buildWidths(Table table, RestRequest request, boolean verbose, List<DisplayHeader> headers) {
+    private static int[] buildWidths(
+        Table table,
+        RestRequest request,
+        boolean verbose,
+        List<DisplayHeader> headers,
+        List<Integer> rowOrder
+    ) {
         int[] width = new int[headers.size()];
         int i;
 
@@ -394,9 +418,13 @@ public class RestTable {
             }
         }
 
+        // Only inspect cells for rows that will actually be displayed. For a request with
+        // limit=5 over a 100K-row table this avoids scanning 99,995 unused cells per column.
         i = 0;
         for (DisplayHeader hdr : headers) {
-            for (Table.Cell cell : table.getAsMap().get(hdr.name)) {
+            List<Table.Cell> column = table.getAsMap().get(hdr.name);
+            for (Integer row : rowOrder) {
+                Table.Cell cell = column.get(row);
                 String v = renderValue(request, cell.value);
                 int vWidth = v == null ? 0 : v.length();
                 if (width[i] < vWidth) {

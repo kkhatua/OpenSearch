@@ -900,8 +900,15 @@ public class RestIndicesAction extends AbstractListAction {
     ) {
         final String healthParam = request.param("health");
         final Table table = getTableWithHeader(request, pageToken);
+        int limit = request.paramAsInt("limit", -1);
+        boolean shouldOptimize = limit >= 0
+            && request.hasParam("s") == false
+            && TableSummarizer.hasAggregation(request.param("h")) == false;
 
         while (tableIterator.hasNext()) {
+            if (shouldOptimize && table.getRows().size() >= limit) {
+                break;
+            }
             final Tuple<String, Settings> tuple = tableIterator.next();
             String indexName = tuple.v1();
             Settings settings = tuple.v2();

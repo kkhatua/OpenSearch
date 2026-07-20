@@ -101,4 +101,52 @@ public class RestTasksActionTests extends OpenSearchTestCase {
             }
         };
     }
+
+    // --- Phase B: per-endpoint early-exit tests ---
+
+    private static TaskInfo dummyTaskInfo(int id) {
+        return new TaskInfo(
+            new TaskId("node" + id, id),
+            "type" + id,
+            "action" + id,
+            "desc" + id,
+            null,
+            1000L,
+            2000L,
+            false,
+            false,
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            null
+        );
+    }
+
+    public void testBuildTableEarlyExitOnLimit() {
+        RestTasksAction action = new RestTasksAction(() -> DiscoveryNodes.EMPTY_NODES);
+        ListTasksResponse response = new ListTasksResponse(List.of(dummyTaskInfo(1), dummyTaskInfo(2)), emptyList(), emptyList());
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        org.opensearch.common.Table table = action.buildTable(req, response);
+        assertEquals(1, table.getRows().size());
+    }
+
+    public void testBuildTableLimitNoOptimizationWithSort() {
+        RestTasksAction action = new RestTasksAction(() -> DiscoveryNodes.EMPTY_NODES);
+        ListTasksResponse response = new ListTasksResponse(List.of(dummyTaskInfo(1), dummyTaskInfo(2)), emptyList(), emptyList());
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("s", "action");
+        org.opensearch.common.Table table = action.buildTable(req, response);
+        assertEquals(2, table.getRows().size());
+    }
+
+    public void testBuildTableLimitNoOptimizationWithAggregation() {
+        RestTasksAction action = new RestTasksAction(() -> DiscoveryNodes.EMPTY_NODES);
+        ListTasksResponse response = new ListTasksResponse(List.of(dummyTaskInfo(1), dummyTaskInfo(2)), emptyList(), emptyList());
+        FakeRestRequest req = new FakeRestRequest();
+        req.params().put("limit", "1");
+        req.params().put("h", "count(action)");
+        org.opensearch.common.Table table = action.buildTable(req, response);
+        assertEquals(2, table.getRows().size());
+    }
 }
