@@ -19,6 +19,9 @@ import org.opensearch.action.support.HandledTransportAction;
 import org.opensearch.action.support.TimeoutTaskCancellationUtility;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.node.DiscoveryNode;
+import org.opensearch.cluster.node.DiscoveryNodes;
+import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.common.breaker.ResponseLimitBreachedException;
 import org.opensearch.common.breaker.ResponseLimitSettings;
 import org.opensearch.common.inject.Inject;
@@ -29,8 +32,14 @@ import org.opensearch.tasks.Task;
 import org.opensearch.transport.TransportService;
 import org.opensearch.transport.client.node.NodeClient;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.PriorityQueue;
+import java.util.Set;
 
 import static org.opensearch.common.breaker.ResponseLimitSettings.LimitEntity.SHARDS;
 
@@ -102,16 +111,44 @@ public class TransportCatShardsAction extends HandledTransportAction<CatShardsRe
                             clusterStateResponse
                         );
                         catShardsResponse.setNodes(clusterStateResponse.getState().getNodes());
-                        catShardsResponse.setResponseShards(
-                            Objects.isNull(paginationStrategy)
+                        // Phase 3: when the REST layer set a routing-derivable single-column sort
+                        // with a positive limit, and pagination is NOT active, we can select the
+                        // top-K shards directly from cluster state. This avoids issuing
+                        // IndicesStats for all shards on all nodes when most rows would be
+                        // discarded by the limit anyway.
+                        List<ShardRouting> selectedShards;
+                        if (Objects.isNull(paginationStrategy)
+                            && shardsRequest.getRoutingSortColumn() != null
+                            && shardsRequest.getResponseLimit() > 0) {
+                            selectedShards = selectTopKShardsByRouting(
+                                clusterStateResponse.getState().routingTable().allShards(),
+                                clusterStateResponse.getState().getNodes(),
+                                shardsRequest.getRoutingSortColumn(),
+                                shardsRequest.isRoutingSortDescending(),
+                                shardsRequest.getResponseLimit()
+                            );
+                        } else {
+                            selectedShards = Objects.isNull(paginationStrategy)
                                 ? clusterStateResponse.getState().routingTable().allShards()
-                                : paginationStrategy.getRequestedEntities()
-                        );
+                                : paginationStrategy.getRequestedEntities();
+                        }
+                        catShardsResponse.setResponseShards(selectedShards);
                         catShardsResponse.setPageToken(Objects.isNull(paginationStrategy) ? null : paginationStrategy.getResponseToken());
 
-                        String[] indices = Objects.isNull(paginationStrategy)
-                            ? shardsRequest.getIndices()
-                            : filterClosedIndices(clusterStateResponse.getState(), paginationStrategy.getRequestedIndices());
+                        String[] indices;
+                        if (Objects.isNull(paginationStrategy)) {
+                            // If top-K narrowed the shard set, narrow the IndicesStats fan-out to
+                            // only the (distinct) indices that those shards belong to. For routing
+                            // pushdown on, say, 5 shards across 2 indices, IndicesStats now hits
+                            // 2 indices on the data nodes instead of every index in the cluster.
+                            if (shardsRequest.getRoutingSortColumn() != null && shardsRequest.getResponseLimit() > 0) {
+                                indices = distinctIndicesOf(selectedShards);
+                            } else {
+                                indices = shardsRequest.getIndices();
+                            }
+                        } else {
+                            indices = filterClosedIndices(clusterStateResponse.getState(), paginationStrategy.getRequestedIndices());
+                        }
                         // For paginated queries, if strategy outputs no shards to be returned, avoid fetching IndicesStats.
                         if (shouldSkipIndicesStatsRequest(paginationStrategy, indices)) {
                             catShardsResponse.setIndicesStatsResponse(IndicesStatsResponse.getEmptyResponse());
@@ -193,5 +230,125 @@ public class TransportCatShardsAction extends HandledTransportAction<CatShardsRe
             IndexMetadata metadata = clusterState.metadata().indices().get(index);
             return metadata != null && metadata.getState().equals(IndexMetadata.State.CLOSE) == false;
         }).toArray(String[]::new);
+    }
+
+    /**
+     * Returns the distinct index names across the given shards, preserving insertion order.
+     * Used to narrow the IndicesStats broadcast to only the indices the selected shards belong to.
+     * Package-private for testing.
+     */
+    static String[] distinctIndicesOf(List<ShardRouting> shards) {
+        Set<String> seen = new HashSet<>();
+        List<String> out = new ArrayList<>();
+        for (ShardRouting shard : shards) {
+            if (seen.add(shard.getIndexName())) {
+                out.add(shard.getIndexName());
+            }
+        }
+        return out.toArray(new String[0]);
+    }
+
+    /**
+     * Selects the top-K shards from {@code allShards} by the given routing-derivable column using a
+     * bounded priority queue (O(N log K)). Tie-breaks by the original iteration index so the
+     * resulting order is deterministic and matches the behavior of {@code Collections.sort} over
+     * the same comparator + truncate.
+     *
+     * Package-private for testing.
+     */
+    static List<ShardRouting> selectTopKShardsByRouting(
+        List<ShardRouting> allShards,
+        DiscoveryNodes nodes,
+        String sortColumn,
+        boolean descending,
+        int limit
+    ) {
+        if (limit >= allShards.size()) {
+            // Limit not narrowing — sort the full set with the routing comparator so downstream
+            // ordering is consistent with the explicit s=... parameter.
+            Comparator<ShardRouting> cmp = routingComparator(sortColumn, descending, nodes);
+            List<ShardRouting> sorted = new ArrayList<>(allShards);
+            sorted.sort(cmp);
+            return sorted;
+        }
+        Comparator<ShardRouting> cmp = routingComparator(sortColumn, descending, nodes);
+        // Capture iteration order for deterministic tie-breaking (matches Collections.sort stability).
+        ShardRouting[] arr = allShards.toArray(new ShardRouting[0]);
+        // Pair each ShardRouting with its index in the original list.
+        Comparator<Integer> idxCmp = (i, j) -> {
+            int c = cmp.compare(arr[i], arr[j]);
+            if (c != 0) return c;
+            return Integer.compare(i, j);
+        };
+        PriorityQueue<Integer> heap = new PriorityQueue<>(limit, idxCmp.reversed());
+        for (int i = 0; i < arr.length; i++) {
+            if (heap.size() < limit) {
+                heap.offer(i);
+            } else if (idxCmp.compare(i, heap.peek()) < 0) {
+                heap.poll();
+                heap.offer(i);
+            }
+        }
+        List<Integer> indices = new ArrayList<>(heap);
+        indices.sort(idxCmp);
+        List<ShardRouting> result = new ArrayList<>(indices.size());
+        for (Integer i : indices) {
+            result.add(arr[i]);
+        }
+        return result;
+    }
+
+    /**
+     * Builds a comparator over {@link ShardRouting} for the routing-only columns supported by the
+     * pushdown. Mirrors the null-ordering behavior of {@code RestTable.TableIndexComparator}
+     * (nulls sort first in ascending, last in descending) so that the top-K result is observably
+     * equivalent to "build full table, sort, truncate".
+     */
+    private static Comparator<ShardRouting> routingComparator(String sortColumn, boolean descending, DiscoveryNodes nodes) {
+        Comparator<ShardRouting> base;
+        switch (sortColumn) {
+            case "index":
+                base = Comparator.comparing(ShardRouting::getIndexName, nullsFirst(String::compareTo));
+                break;
+            case "shard":
+                base = Comparator.comparingInt(ShardRouting::id);
+                break;
+            case "prirep":
+                base = Comparator.comparing(TransportCatShardsAction::prirepValue, nullsFirst(String::compareTo));
+                break;
+            case "state":
+                // Compare by enum name() for stable string ordering, matching the cell renderer.
+                base = Comparator.comparing(s -> s.state() == null ? null : s.state().name(), nullsFirst(String::compareTo));
+                break;
+            case "node":
+                base = Comparator.comparing(s -> nodeAttr(s, nodes, DiscoveryNode::getName), nullsFirst(String::compareTo));
+                break;
+            case "ip":
+                base = Comparator.comparing(s -> nodeAttr(s, nodes, DiscoveryNode::getHostAddress), nullsFirst(String::compareTo));
+                break;
+            case "id":
+                base = Comparator.comparing((ShardRouting s) -> s.currentNodeId(), nullsFirst(String::compareTo));
+                break;
+            default:
+                throw new IllegalArgumentException(
+                    String.format(Locale.ROOT, "Routing-only sort column not supported by pushdown: %s", sortColumn)
+                );
+        }
+        return descending ? base.reversed() : base;
+    }
+
+    private static String prirepValue(ShardRouting shard) {
+        if (shard.primary()) return "p";
+        return shard.isSearchOnly() ? "s" : "r";
+    }
+
+    private static <T> T nodeAttr(ShardRouting shard, DiscoveryNodes nodes, java.util.function.Function<DiscoveryNode, T> extractor) {
+        if (shard.assignedToNode() == false) return null;
+        DiscoveryNode node = nodes.get(shard.currentNodeId());
+        return node == null ? null : extractor.apply(node);
+    }
+
+    private static <T> Comparator<T> nullsFirst(Comparator<T> cmp) {
+        return Comparator.nullsFirst(cmp);
     }
 }

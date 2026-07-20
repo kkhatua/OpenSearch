@@ -36,6 +36,12 @@ public class CatShardsRequest extends ClusterManagerNodeReadRequest<CatShardsReq
     // requested shards. When the REST layer determines that no requested column (h= or s=) requires
     // per-shard stats, it sets this to false to skip the broadcast fan-out entirely.
     private boolean indicesStatsRequired = true;
+    // Phase 3: when sort is a single routing-derivable column and limit is positive, the transport
+    // action narrows the response (and the downstream IndicesStats broadcast) to the top-K shards
+    // by this column. Defaults below preserve existing behavior (no narrowing).
+    private String routingSortColumn = null;
+    private boolean routingSortDescending = false;
+    private int responseLimit = -1;
 
     public CatShardsRequest() {}
 
@@ -51,6 +57,9 @@ public class CatShardsRequest extends ClusterManagerNodeReadRequest<CatShardsReq
         }
         if (in.getVersion().onOrAfter(Version.V_3_7_0)) {
             indicesStatsRequired = in.readBoolean();
+            routingSortColumn = in.readOptionalString();
+            routingSortDescending = in.readBoolean();
+            responseLimit = in.readInt();
         }
     }
 
@@ -72,6 +81,9 @@ public class CatShardsRequest extends ClusterManagerNodeReadRequest<CatShardsReq
         }
         if (out.getVersion().onOrAfter(Version.V_3_7_0)) {
             out.writeBoolean(indicesStatsRequired);
+            out.writeOptionalString(routingSortColumn);
+            out.writeBoolean(routingSortDescending);
+            out.writeInt(responseLimit);
         }
     }
 
@@ -118,6 +130,30 @@ public class CatShardsRequest extends ClusterManagerNodeReadRequest<CatShardsReq
 
     public boolean isIndicesStatsRequired() {
         return this.indicesStatsRequired;
+    }
+
+    public void setRoutingSortColumn(String routingSortColumn) {
+        this.routingSortColumn = routingSortColumn;
+    }
+
+    public String getRoutingSortColumn() {
+        return this.routingSortColumn;
+    }
+
+    public void setRoutingSortDescending(boolean routingSortDescending) {
+        this.routingSortDescending = routingSortDescending;
+    }
+
+    public boolean isRoutingSortDescending() {
+        return this.routingSortDescending;
+    }
+
+    public void setResponseLimit(int responseLimit) {
+        this.responseLimit = responseLimit;
+    }
+
+    public int getResponseLimit() {
+        return this.responseLimit;
     }
 
     @Override
