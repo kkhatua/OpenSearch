@@ -8,7 +8,9 @@
 
 package org.opensearch.script.mustache;
 
+import org.opensearch.OpenSearchStatusException;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.core.rest.RestStatus;
 import org.opensearch.script.ScriptContext;
 import org.opensearch.script.ScriptEngine;
 import org.opensearch.script.TemplateScript;
@@ -78,10 +80,11 @@ public class MustacheModulePluginTests extends OpenSearchTestCase {
 
     public void testRuntimeGuardRejectsCompileWhenDisabled() {
         MustacheScriptEngine engine = new MustacheScriptEngine(() -> false);
-        IllegalArgumentException e = expectThrows(
-            IllegalArgumentException.class,
+        OpenSearchStatusException e = expectThrows(
+            OpenSearchStatusException.class,
             () -> engine.compile("test", "{{value}}", TemplateScript.CONTEXT, Collections.emptyMap())
         );
+        assertEquals(RestStatus.FORBIDDEN, e.status());
         assertTrue(e.getMessage(), e.getMessage().contains("script.mustache.runtime_enabled"));
     }
 
@@ -94,7 +97,8 @@ public class MustacheModulePluginTests extends OpenSearchTestCase {
         assertEquals("rendered:ok", script.execute());
 
         runtime.set(false);
-        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, script::execute);
+        OpenSearchStatusException e = expectThrows(OpenSearchStatusException.class, script::execute);
+        assertEquals(RestStatus.FORBIDDEN, e.status());
         assertTrue(e.getMessage(), e.getMessage().contains("script.mustache.runtime_enabled"));
 
         runtime.set(true);

@@ -39,7 +39,9 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.util.Supplier;
+import org.opensearch.OpenSearchStatusException;
 import org.opensearch.SpecialPermission;
+import org.opensearch.core.rest.RestStatus;
 import org.opensearch.script.GeneralScriptException;
 import org.opensearch.script.Script;
 import org.opensearch.script.ScriptContext;
@@ -119,11 +121,14 @@ public final class MustacheScriptEngine implements ScriptEngine {
 
     /**
      * Throws if mustache templating has been disabled at runtime via {@code script.mustache.runtime_enabled}.
+     * Uses {@link RestStatus#FORBIDDEN} (HTTP 403) because the request is well-formed but refused by cluster
+     * policy, rather than {@link RestStatus#BAD_REQUEST} which implies a malformed request.
      */
     private void ensureEnabled() {
         if (enabled.getAsBoolean() == false) {
-            throw new IllegalArgumentException(
-                "mustache scripting is disabled; set [script.mustache.runtime_enabled] to [true] to enable search templates"
+            throw new OpenSearchStatusException(
+                "mustache scripting is disabled; set [script.mustache.runtime_enabled] to [true] to enable search templates",
+                RestStatus.FORBIDDEN
             );
         }
     }
