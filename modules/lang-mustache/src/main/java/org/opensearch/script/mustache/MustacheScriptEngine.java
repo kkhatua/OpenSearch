@@ -54,6 +54,7 @@ import java.io.StringWriter;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 /**
  * Main entry point handling template registration, compilation and
@@ -69,6 +70,29 @@ public final class MustacheScriptEngine implements ScriptEngine {
     public static final String NAME = "mustache";
 
     /**
+     * Runtime switch controlling whether mustache templating is enabled. Evaluated on every compile and execute so
+     * that a dynamic {@code script.mustache.enabled} update takes effect immediately, including for templates that
+     * were compiled and cached while the feature was enabled.
+     */
+    private final BooleanSupplier enabled;
+
+    /**
+     * Creates an engine that is always enabled. Retained for backwards compatibility with callers (including tests)
+     * that do not wire a runtime guard.
+     */
+    public MustacheScriptEngine() {
+        this(() -> true);
+    }
+
+    /**
+     * @param enabled supplier consulted on every compile/execute; when it returns {@code false} mustache templating
+     *                is rejected at runtime.
+     */
+    public MustacheScriptEngine(BooleanSupplier enabled) {
+        this.enabled = enabled;
+    }
+
+    /**
      * Compile a template string to (in this case) a Mustache object than can
      * later be re-used for execution to fill in missing parameter values.
      *
@@ -77,6 +101,7 @@ public final class MustacheScriptEngine implements ScriptEngine {
      * */
     @Override
     public <T> T compile(String templateName, String templateSource, ScriptContext<T> context, Map<String, String> options) {
+        ensureEnabled();
         if (context.instanceClazz.equals(TemplateScript.class) == false) {
             throw new IllegalArgumentException("mustache engine does not know how to handle context [" + context.name + "]");
         }
@@ -90,6 +115,17 @@ public final class MustacheScriptEngine implements ScriptEngine {
             throw new ScriptException(ex.getMessage(), ex, Collections.emptyList(), templateSource, NAME);
         }
 
+    }
+
+    /**
+     * Throws if mustache templating has been disabled at runtime via {@code script.mustache.enabled}.
+     */
+    private void ensureEnabled() {
+        if (enabled.getAsBoolean() == false) {
+            throw new IllegalArgumentException(
+                "mustache scripting is disabled; set [script.mustache.enabled] to [true] to enable search templates"
+            );
+        }
     }
 
     @Override
@@ -129,6 +165,7 @@ public final class MustacheScriptEngine implements ScriptEngine {
 
         @Override
         public String execute() {
+            ensureEnabled();
             final StringWriter writer = new StringWriter();
             try {
                 // crazy reflection here
