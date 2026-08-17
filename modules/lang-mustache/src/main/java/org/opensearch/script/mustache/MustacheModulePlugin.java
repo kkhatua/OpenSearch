@@ -32,6 +32,8 @@
 
 package org.opensearch.script.mustache;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.action.ActionRequest;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNodes;
@@ -104,6 +106,8 @@ public class MustacheModulePlugin extends Plugin implements ScriptPlugin, Action
     // cluster-settings update consumer registered in createComponents. Only meaningful when enabled == true.
     private final AtomicBoolean runtimeEnabled = new AtomicBoolean(true);
 
+    private static final Logger logger = LogManager.getLogger(MustacheModulePlugin.class);
+
     public MustacheModulePlugin(Settings settings) {
         this.enabled = MUSTACHE_ENABLED_SETTING.get(settings);
         this.runtimeEnabled.set(MUSTACHE_RUNTIME_ENABLED_SETTING.get(settings));
@@ -136,12 +140,45 @@ public class MustacheModulePlugin extends Plugin implements ScriptPlugin, Action
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<RepositoriesService> repositoriesServiceSupplier
     ) {
-        // The dynamic runtime guard only matters when the feature is registered.
-        if (enabled) {
-            runtimeEnabled.set(MUSTACHE_RUNTIME_ENABLED_SETTING.get(clusterService.getSettings()));
-            clusterService.getClusterSettings().addSettingsUpdateConsumer(MUSTACHE_RUNTIME_ENABLED_SETTING, runtimeEnabled::set);
-        }
+        registerRuntimeGuard(clusterService.getClusterSettings(), clusterService.getSettings());
         return Collections.emptyList();
+    }
+
+    /**
+     * Wires the dynamic {@code script.mustache.runtime_enabled} guard. Package-private for testing.
+     *
+     * <p>When the feature is registered ({@link #MUSTACHE_ENABLED_SETTING} is true) the consumer keeps the runtime
+     * guard state current. When the feature is hard-disabled by the static kill-switch, the runtime setting cannot
+     * re-enable it, so instead of silently accepting updates we log a warning — both at startup (if it was explicitly
+     * set) and on any runtime change — so operators are not misled into thinking the dynamic setting takes effect.
+     */
+    void registerRuntimeGuard(ClusterSettings clusterSettings, Settings currentSettings) {
+        if (enabled) {
+            runtimeEnabled.set(MUSTACHE_RUNTIME_ENABLED_SETTING.get(currentSettings));
+            clusterSettings.addSettingsUpdateConsumer(MUSTACHE_RUNTIME_ENABLED_SETTING, runtimeEnabled::set);
+        } else {
+            if (MUSTACHE_RUNTIME_ENABLED_SETTING.exists(currentSettings)) {
+                warnRuntimeSettingIneffective(MUSTACHE_RUNTIME_ENABLED_SETTING.get(currentSettings));
+            }
+            clusterSettings.addSettingsUpdateConsumer(MUSTACHE_RUNTIME_ENABLED_SETTING, this::warnRuntimeSettingIneffective);
+        }
+    }
+
+    private void warnRuntimeSettingIneffective(boolean value) {
+        logger.warn(
+            "[{}] was set to [{}], but [{}] is [false] on this node: the mustache feature (its script engine and the "
+                + "[_search/template], [_render/template] and [_msearch/template] endpoints) is not registered, so this "
+                + "setting has no effect. Set [{}] to [true] and restart the node to use search templates.",
+            MUSTACHE_RUNTIME_ENABLED_SETTING.getKey(),
+            value,
+            MUSTACHE_ENABLED_SETTING.getKey(),
+            MUSTACHE_ENABLED_SETTING.getKey()
+        );
+    }
+
+    // package-private for testing
+    boolean isRuntimeEnabled() {
+        return runtimeEnabled.get();
     }
 
     @Override
