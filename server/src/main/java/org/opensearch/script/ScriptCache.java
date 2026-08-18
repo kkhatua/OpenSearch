@@ -43,6 +43,8 @@ import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.breaker.CircuitBreaker;
 import org.opensearch.core.common.breaker.CircuitBreakingException;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
@@ -145,6 +147,23 @@ public class ScriptCache {
     @SuppressWarnings("unchecked")
     static <T extends Throwable> void rethrow(Throwable t) throws T {
         throw (T) t;
+    }
+
+    /**
+     * Invalidate all cached compiled scripts for the given language (as returned by
+     * {@link ScriptEngine#getType()}), leaving entries for other languages untouched. Used to evict a single
+     * engine's scripts (e.g. when that engine is disabled at runtime) so subsequent executions must recompile.
+     */
+    void invalidateForLang(String lang) {
+        List<CacheKey> matching = new ArrayList<>();
+        for (CacheKey key : cache.keys()) {
+            if (lang.equals(key.lang)) {
+                matching.add(key);
+            }
+        }
+        for (CacheKey key : matching) {
+            cache.invalidate(key);
+        }
     }
 
     public ScriptStats stats() {

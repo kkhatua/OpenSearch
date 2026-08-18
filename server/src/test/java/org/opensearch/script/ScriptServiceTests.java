@@ -31,6 +31,7 @@
 
 package org.opensearch.script;
 
+import org.opensearch.OpenSearchStatusException;
 import org.opensearch.ResourceNotFoundException;
 import org.opensearch.action.admin.cluster.storedscripts.GetStoredScriptRequest;
 import org.opensearch.cluster.ClusterName;
@@ -44,6 +45,7 @@ import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.core.common.breaker.CircuitBreakingException;
 import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.rest.RestStatus;
 import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.search.lookup.FieldsLookup;
@@ -174,6 +176,84 @@ public class ScriptServiceTests extends OpenSearchTestCase {
                 )
             );
         }
+    }
+
+    public void testInvalidateForLangEvictsOnlyThatLanguage() throws IOException {
+        buildScriptService(Settings.EMPTY);
+        Script painlessScript = new Script(ScriptType.INLINE, scriptEngine.getType(), "1+1", Collections.emptyMap());
+        Script testScript = new Script(ScriptType.INLINE, "test", "1+1", Collections.emptyMap());
+
+        scriptService.compile(painlessScript, FieldScript.CONTEXT);
+        scriptService.compile(testScript, FieldScript.CONTEXT);
+        assertEquals(2, scriptService.stats().getCompilations());
+
+        // Evict only the "test" language entries.
+        scriptService.invalidateForLang("test");
+
+        // The other language's entry survives -> cache hit, no recompilation.
+        scriptService.compile(painlessScript, FieldScript.CONTEXT);
+        assertEquals(2, scriptService.stats().getCompilations());
+
+        // The evicted language's entry must recompile.
+        scriptService.compile(testScript, FieldScript.CONTEXT);
+        assertEquals(3, scriptService.stats().getCompilations());
+    }
+
+    public void testDisabledLanguageRejectsCompileWithForbidden() throws IOException {
+        // Seed script.test.enabled=false at startup; only the "test" language is refused.
+        buildScriptService(Settings.builder().put("script.test.enabled", false).build());
+
+        Script testScript = new Script(ScriptType.INLINE, "test", "1+1", Collections.emptyMap());
+        OpenSearchStatusException e = expectThrows(
+            OpenSearchStatusException.class,
+            () -> scriptService.compile(testScript, FieldScript.CONTEXT)
+        );
+        assertEquals(RestStatus.FORBIDDEN, e.status());
+        assertTrue(e.getMessage(), e.getMessage().contains("script.test.enabled"));
+
+        // The other language is unaffected.
+        scriptService.compile(new Script(ScriptType.INLINE, scriptEngine.getType(), "1+1", Collections.emptyMap()), FieldScript.CONTEXT);
+    }
+
+    public void testSetLangEnabledTogglesGuardAndEvictsOnlyThatLang() throws IOException {
+        buildScriptService(Settings.EMPTY);
+        Script painlessScript = new Script(ScriptType.INLINE, scriptEngine.getType(), "1+1", Collections.emptyMap());
+        Script testScript = new Script(ScriptType.INLINE, "test", "1+1", Collections.emptyMap());
+        scriptService.compile(painlessScript, FieldScript.CONTEXT);
+        scriptService.compile(testScript, FieldScript.CONTEXT);
+        assertEquals(2, scriptService.stats().getCompilations());
+
+        // Disable "test": guard rejects it, and only its cached entry is evicted.
+        scriptService.setLangEnabled("test", false);
+        assertFalse(scriptService.isLangEnabled("test"));
+        assertEquals(RestStatus.FORBIDDEN, expectThrows(OpenSearchStatusException.class, () -> {
+            scriptService.compile(testScript, FieldScript.CONTEXT);
+        }).status());
+        // painless entry survived the eviction -> still a cache hit
+        scriptService.compile(painlessScript, FieldScript.CONTEXT);
+        assertEquals(2, scriptService.stats().getCompilations());
+
+        // Re-enable "test": compiles again (was evicted, so recompiles).
+        scriptService.setLangEnabled("test", true);
+        assertTrue(scriptService.isLangEnabled("test"));
+        scriptService.compile(testScript, FieldScript.CONTEXT);
+        assertEquals(3, scriptService.stats().getCompilations());
+    }
+
+    public void testValidateRejectsDisablingEngineThatOptsOut() throws IOException {
+        engines.put("locked", new MockScriptEngine("locked", Collections.emptyMap(), Collections.emptyMap()) {
+            @Override
+            public boolean supportsRuntimeDisable() {
+                return false;
+            }
+        });
+        buildScriptService(Settings.EMPTY);
+
+        // Disabling is rejected for an engine that opts out...
+        expectThrows(IllegalArgumentException.class, () -> scriptService.validateLangEnabled("locked", false));
+        // ...but enabling (or engines that allow it) validate fine.
+        scriptService.validateLangEnabled("locked", true);
+        scriptService.validateLangEnabled("test", false);
     }
 
     public void testInlineScriptCompiledOnceCache() throws IOException {

@@ -69,4 +69,24 @@ public interface ScriptEngine extends Closeable {
      * Script contexts supported by this engine.
      */
     Set<ScriptContext<?>> getSupportedContexts();
+
+    /**
+     * Whether this engine may be enabled or disabled at runtime via the {@code script.<lang>.enabled} cluster setting.
+     * Engines that must always be available can return {@code false} to have such updates rejected.
+     *
+     * @return {@code true} by default
+     */
+    default boolean supportsRuntimeDisable() {
+        return true;
+    }
+
+    /**
+     * Hook invoked by {@link ScriptService} when the {@code script.<lang>.enabled} state for this engine's language
+     * changes (and once with the initial value at startup). The generic framework already refuses compilation and
+     * evicts this language's cached scripts when disabled; engines only need to override this to add engine-specific
+     * behavior (for example, guarding a cheap {@code execute()} path). Default is a no-op.
+     *
+     * @param enabled the new enabled state
+     */
+    default void onEnabledChanged(boolean enabled) {}
 }

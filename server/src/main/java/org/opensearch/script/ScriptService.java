@@ -34,6 +34,7 @@ package org.opensearch.script;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.OpenSearchStatusException;
 import org.opensearch.ResourceNotFoundException;
 import org.opensearch.action.admin.cluster.storedscripts.DeleteStoredScriptRequest;
 import org.opensearch.action.admin.cluster.storedscripts.GetStoredScriptRequest;
@@ -55,6 +56,7 @@ import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.Strings;
+import org.opensearch.core.rest.RestStatus;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -69,6 +71,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -176,6 +179,18 @@ public class ScriptService implements Closeable, ClusterStateApplier {
         Setting.Property.NodeScope
     );
 
+    /**
+     * Per-language runtime enable switch: {@code script.<lang>.enabled} (dynamic, node-scoped, default true).
+     * When set to {@code false}, {@link ScriptService} refuses to compile scripts for that language with HTTP 403 and
+     * evicts only that language's cached compiled scripts. Engines that must always be available can opt out via
+     * {@link ScriptEngine#supportsRuntimeDisable()}, in which case a disabling update is rejected.
+     */
+    public static final Setting.AffixSetting<Boolean> SCRIPT_LANG_ENABLED_SETTING = Setting.affixKeySetting(
+        "script.",
+        "enabled",
+        key -> Setting.boolSetting(key, true, Property.Dynamic, Property.NodeScope)
+    );
+
     private final Set<String> typesAllowed;
     private final Set<String> contextsAllowed;
 
@@ -185,6 +200,9 @@ public class ScriptService implements Closeable, ClusterStateApplier {
     private ClusterState clusterState;
 
     private int maxSizeInBytes;
+
+    // Per-language enabled state for the script.<lang>.enabled framework; absent means enabled (default true).
+    private final Map<String, Boolean> langEnabled = new ConcurrentHashMap<>();
 
     // package private for tests
     final AtomicReference<CacheHolder> cacheHolder = new AtomicReference<>();
@@ -290,6 +308,14 @@ public class ScriptService implements Closeable, ClusterStateApplier {
         // Validation requires knowing which contexts exist.
         this.validateCacheSettings(settings);
         this.setCacheHolder(settings);
+
+        // Seed per-language enable state from settings and notify each engine of its initial state.
+        for (Map.Entry<String, ScriptEngine> entry : engines.entrySet()) {
+            String lang = entry.getKey();
+            boolean enabled = SCRIPT_LANG_ENABLED_SETTING.getConcreteSettingForNamespace(lang).get(settings);
+            langEnabled.put(lang, enabled);
+            entry.getValue().onEnabledChanged(enabled);
+        }
     }
 
     /**
@@ -331,6 +357,40 @@ public class ScriptService implements Closeable, ClusterStateApplier {
             ),
             this::validateCacheSettings
         );
+
+        // Per-language runtime enable/disable (script.<lang>.enabled).
+        clusterSettings.addAffixUpdateConsumer(SCRIPT_LANG_ENABLED_SETTING, this::setLangEnabled, this::validateLangEnabled);
+    }
+
+    /** Whether scripts for the given language may currently be compiled. Absent state defaults to enabled. */
+    boolean isLangEnabled(String lang) {
+        return langEnabled.getOrDefault(lang, Boolean.TRUE);
+    }
+
+    /**
+     * Applies a {@code script.<lang>.enabled} update: records the new state, evicts only this language's cached
+     * scripts when disabling (so cached scripts recompile and are then refused), and notifies the engine so it can
+     * apply any engine-specific behavior.
+     */
+    void setLangEnabled(String lang, boolean enabled) {
+        langEnabled.put(lang, enabled);
+        if (enabled == false) {
+            invalidateForLang(lang);
+        }
+        ScriptEngine engine = engines.get(lang);
+        if (engine != null) {
+            engine.onEnabledChanged(enabled);
+        }
+    }
+
+    /** Rejects disabling a language whose engine declares it does not support runtime disable. */
+    void validateLangEnabled(String lang, boolean enabled) {
+        ScriptEngine engine = engines.get(lang);
+        if (enabled == false && engine != null && engine.supportsRuntimeDisable() == false) {
+            throw new IllegalArgumentException(
+                "[" + lang + "] scripting cannot be disabled at runtime via [" + "script." + lang + ".enabled]"
+            );
+        }
     }
 
     /**
@@ -461,6 +521,13 @@ public class ScriptService implements Closeable, ClusterStateApplier {
         }
 
         ScriptEngine scriptEngine = getEngine(lang);
+
+        if (isLangEnabled(lang) == false) {
+            throw new OpenSearchStatusException(
+                "[" + lang + "] scripting is disabled; set [script." + lang + ".enabled] to [true] to enable it",
+                RestStatus.FORBIDDEN
+            );
+        }
 
         if (isTypeEnabled(type) == false) {
             throw new IllegalArgumentException("cannot execute [" + type + "] scripts");
@@ -700,6 +767,16 @@ public class ScriptService implements Closeable, ClusterStateApplier {
         clusterState = event.state();
     }
 
+    /**
+     * Invalidate all compiled scripts cached for the given language (matched against {@link ScriptEngine#getType()})
+     * across the general or per-context caches, leaving other languages' cached scripts intact. Used by the
+     * {@code script.<lang>.enabled} framework so a disabled language's cached scripts are evicted and must recompile
+     * (and can then be refused) without a full cache rebuild that would evict every language.
+     */
+    public void invalidateForLang(String lang) {
+        cacheHolder.get().invalidateForLang(lang);
+    }
+
     void setCacheHolder(Settings settings) {
         CacheHolder current = cacheHolder.get();
         boolean useContext = SCRIPT_GENERAL_MAX_COMPILATIONS_RATE_SETTING.get(settings).equals(USE_CONTEXT_RATE_VALUE);
@@ -824,6 +901,20 @@ public class ScriptService implements Closeable, ClusterStateApplier {
                 context.put(name, contextCache.get(name).get().stats());
             }
             return new ScriptCacheStats(context);
+        }
+
+        /** Evict cached compiled scripts for a single language from the general or all per-context caches. */
+        void invalidateForLang(String lang) {
+            if (general != null) {
+                general.invalidateForLang(lang);
+            } else {
+                for (AtomicReference<ScriptCache> ref : contextCache.values()) {
+                    ScriptCache scriptCache = ref.get();
+                    if (scriptCache != null) {
+                        scriptCache.invalidateForLang(lang);
+                    }
+                }
+            }
         }
 
         /**

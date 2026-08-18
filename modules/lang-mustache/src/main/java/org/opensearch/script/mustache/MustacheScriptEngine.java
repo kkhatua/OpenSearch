@@ -39,7 +39,9 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.apache.logging.log4j.util.Supplier;
+import org.opensearch.OpenSearchStatusException;
 import org.opensearch.SpecialPermission;
+import org.opensearch.core.rest.RestStatus;
 import org.opensearch.script.GeneralScriptException;
 import org.opensearch.script.Script;
 import org.opensearch.script.ScriptContext;
@@ -54,6 +56,7 @@ import java.io.StringWriter;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Main entry point handling template registration, compilation and
@@ -67,6 +70,20 @@ public final class MustacheScriptEngine implements ScriptEngine {
     private static final Logger logger = LogManager.getLogger(MustacheScriptEngine.class);
 
     public static final String NAME = "mustache";
+
+    /**
+     * Runtime enable-state driven by the generic {@code script.mustache.enabled} framework via
+     * {@link #onEnabledChanged(boolean)}. Compilation is already refused centrally by {@code ScriptService}; this flag
+     * additionally guards {@link MustacheExecutableScript#execute()} so an in-flight cached template is refused
+     * immediately on disable (closing the brief window before the language's cache is evicted). Mustache templates
+     * execute once per request, so this check is not on a hot path.
+     */
+    private final AtomicBoolean enabled = new AtomicBoolean(true);
+
+    @Override
+    public void onEnabledChanged(boolean enabled) {
+        this.enabled.set(enabled);
+    }
 
     /**
      * Compile a template string to (in this case) a Mustache object than can
@@ -129,6 +146,12 @@ public final class MustacheScriptEngine implements ScriptEngine {
 
         @Override
         public String execute() {
+            if (enabled.get() == false) {
+                throw new OpenSearchStatusException(
+                    "mustache scripting is disabled; set [script.mustache.enabled] to [true] to enable search templates",
+                    RestStatus.FORBIDDEN
+                );
+            }
             final StringWriter writer = new StringWriter();
             try {
                 // crazy reflection here
