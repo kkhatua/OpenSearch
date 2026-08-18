@@ -176,6 +176,27 @@ public class ScriptServiceTests extends OpenSearchTestCase {
         }
     }
 
+    public void testInvalidateForLangEvictsOnlyThatLanguage() throws IOException {
+        buildScriptService(Settings.EMPTY);
+        Script painlessScript = new Script(ScriptType.INLINE, scriptEngine.getType(), "1+1", Collections.emptyMap());
+        Script testScript = new Script(ScriptType.INLINE, "test", "1+1", Collections.emptyMap());
+
+        scriptService.compile(painlessScript, FieldScript.CONTEXT);
+        scriptService.compile(testScript, FieldScript.CONTEXT);
+        assertEquals(2, scriptService.stats().getCompilations());
+
+        // Evict only the "test" language entries.
+        scriptService.invalidateForLang("test");
+
+        // The other language's entry survives -> cache hit, no recompilation.
+        scriptService.compile(painlessScript, FieldScript.CONTEXT);
+        assertEquals(2, scriptService.stats().getCompilations());
+
+        // The evicted language's entry must recompile.
+        scriptService.compile(testScript, FieldScript.CONTEXT);
+        assertEquals(3, scriptService.stats().getCompilations());
+    }
+
     public void testInlineScriptCompiledOnceCache() throws IOException {
         buildScriptService(Settings.EMPTY);
         Script script = new Script(ScriptType.INLINE, "test", "1+1", Collections.emptyMap());

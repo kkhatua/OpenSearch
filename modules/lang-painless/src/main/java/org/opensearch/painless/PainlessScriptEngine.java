@@ -32,8 +32,10 @@
 
 package org.opensearch.painless;
 
+import org.opensearch.OpenSearchStatusException;
 import org.opensearch.SpecialPermission;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.core.rest.RestStatus;
 import org.opensearch.painless.Compiler.Loader;
 import org.opensearch.painless.lookup.PainlessLookup;
 import org.opensearch.painless.lookup.PainlessLookupBuilder;
@@ -57,6 +59,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 import static org.opensearch.painless.WriterConstants.OBJECT_TYPE;
 
@@ -81,10 +84,27 @@ public final class PainlessScriptEngine implements ScriptEngine {
     private final Map<ScriptContext<?>, PainlessLookup> contextsToLookups;
 
     /**
+     * Supplier consulted on every compile; when it returns {@code false} Painless compilation is refused at runtime
+     * (via {@code script.painless.enabled}). Defaults to always-enabled for backwards compatibility.
+     */
+    private final BooleanSupplier enabled;
+
+    /**
      * Constructor.
      * @param settings The settings to initialize the engine with.
      */
     public PainlessScriptEngine(Settings settings, Map<ScriptContext<?>, List<Allowlist>> contexts) {
+        this(settings, contexts, () -> true);
+    }
+
+    /**
+     * Constructor.
+     * @param settings The settings to initialize the engine with.
+     * @param contexts The contexts and their allowlists.
+     * @param enabled Runtime guard consulted on every compile; when {@code false}, compilation is refused.
+     */
+    public PainlessScriptEngine(Settings settings, Map<ScriptContext<?>, List<Allowlist>> contexts, BooleanSupplier enabled) {
+        this.enabled = enabled;
         defaultCompilerSettings.setRegexesEnabled(CompilerSettings.REGEX_ENABLED.get(settings));
         defaultCompilerSettings.setRegexLimitFactor(CompilerSettings.REGEX_LIMIT_FACTOR.get(settings));
 
@@ -122,6 +142,12 @@ public final class PainlessScriptEngine implements ScriptEngine {
 
     @Override
     public <T> T compile(String scriptName, String scriptSource, ScriptContext<T> context, Map<String, String> params) {
+        if (enabled.getAsBoolean() == false) {
+            throw new OpenSearchStatusException(
+                "painless scripting is disabled; set [script.painless.enabled] to [true] to enable it",
+                RestStatus.FORBIDDEN
+            );
+        }
         Compiler compiler = contextsToCompilers.get(context);
 
         // Check we ourselves are not being called by unprivileged code.

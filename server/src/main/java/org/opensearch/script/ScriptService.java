@@ -700,6 +700,16 @@ public class ScriptService implements Closeable, ClusterStateApplier {
         clusterState = event.state();
     }
 
+    /**
+     * Invalidate all compiled scripts cached for the given language (matched against {@link ScriptEngine#getType()})
+     * across the general or per-context caches, leaving other languages' cached scripts intact. Intended for script
+     * engines that can be disabled at runtime, so their cached scripts are evicted and must recompile (and can then be
+     * rejected) without triggering a full cache rebuild that would evict every language.
+     */
+    public void invalidateForLang(String lang) {
+        cacheHolder.get().invalidateForLang(lang);
+    }
+
     void setCacheHolder(Settings settings) {
         CacheHolder current = cacheHolder.get();
         boolean useContext = SCRIPT_GENERAL_MAX_COMPILATIONS_RATE_SETTING.get(settings).equals(USE_CONTEXT_RATE_VALUE);
@@ -824,6 +834,20 @@ public class ScriptService implements Closeable, ClusterStateApplier {
                 context.put(name, contextCache.get(name).get().stats());
             }
             return new ScriptCacheStats(context);
+        }
+
+        /** Evict cached compiled scripts for a single language from the general or all per-context caches. */
+        void invalidateForLang(String lang) {
+            if (general != null) {
+                general.invalidateForLang(lang);
+            } else {
+                for (AtomicReference<ScriptCache> ref : contextCache.values()) {
+                    ScriptCache scriptCache = ref.get();
+                    if (scriptCache != null) {
+                        scriptCache.invalidateForLang(lang);
+                    }
+                }
+            }
         }
 
         /**

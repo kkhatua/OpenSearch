@@ -79,6 +79,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 /**
@@ -129,6 +130,23 @@ public final class PainlessModulePlugin extends Plugin implements ScriptPlugin, 
 
     private final SetOnce<PainlessScriptEngine> painlessScriptEngine = new SetOnce<>();
 
+    /**
+     * Dynamic, node-scoped switch to enable/disable Painless script execution at runtime (default {@code true}).
+     * When set to {@code false} the engine refuses to compile Painless scripts (403), and the plugin evicts only
+     * Painless entries from the compiled-script cache so already-cached scripts must recompile and are likewise
+     * refused. Other languages' cached scripts are left untouched.
+     */
+    public static final Setting<Boolean> PAINLESS_ENABLED_SETTING = Setting.boolSetting(
+        "script.painless.enabled",
+        true,
+        Setting.Property.Dynamic,
+        Setting.Property.NodeScope
+    );
+
+    // Shared, mutable enabled-state read by the Painless engine on every compile; kept current by the
+    // cluster-settings update consumer registered in createComponents.
+    private final AtomicBoolean painlessEnabled = new AtomicBoolean(true);
+
     @Override
     public ScriptEngine getScriptEngine(Settings settings, Collection<ScriptContext<?>> contexts) {
         Map<ScriptContext<?>, List<Allowlist>> contextsWithAllowlists = new HashMap<>();
@@ -140,7 +158,8 @@ public final class PainlessModulePlugin extends Plugin implements ScriptPlugin, 
             }
             contextsWithAllowlists.put(context, contextAllowlists);
         }
-        painlessScriptEngine.set(new PainlessScriptEngine(settings, contextsWithAllowlists));
+        painlessEnabled.set(PAINLESS_ENABLED_SETTING.get(settings));
+        painlessScriptEngine.set(new PainlessScriptEngine(settings, contextsWithAllowlists, painlessEnabled::get));
         return painlessScriptEngine.get();
     }
 
@@ -158,6 +177,16 @@ public final class PainlessModulePlugin extends Plugin implements ScriptPlugin, 
         IndexNameExpressionResolver expressionResolver,
         Supplier<RepositoriesService> repositoriesServiceSupplier
     ) {
+        // Seed from the effective node settings and subscribe to dynamic updates. When Painless is disabled we evict
+        // only its cached compiled scripts (leaving other languages intact) so cached scripts recompile and are
+        // rejected by the engine's compile guard.
+        painlessEnabled.set(PAINLESS_ENABLED_SETTING.get(clusterService.getSettings()));
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(PAINLESS_ENABLED_SETTING, enabled -> {
+            painlessEnabled.set(enabled);
+            if (enabled == false) {
+                scriptService.invalidateForLang(PainlessScriptEngine.NAME);
+            }
+        });
         // this is a hack to bind the painless script engine in guice (all components are added to guice), so that
         // the painless context api. this is a temporary measure until transport actions do no require guice
         return Collections.singletonList(painlessScriptEngine.get());
@@ -165,7 +194,7 @@ public final class PainlessModulePlugin extends Plugin implements ScriptPlugin, 
 
     @Override
     public List<Setting<?>> getSettings() {
-        return Arrays.asList(CompilerSettings.REGEX_ENABLED, CompilerSettings.REGEX_LIMIT_FACTOR);
+        return Arrays.asList(CompilerSettings.REGEX_ENABLED, CompilerSettings.REGEX_LIMIT_FACTOR, PAINLESS_ENABLED_SETTING);
     }
 
     @Override
