@@ -9,33 +9,46 @@
 package org.opensearch.rest.action.cat;
 
 import org.opensearch.common.Table;
+import org.opensearch.common.regex.Regex;
 import org.opensearch.common.unit.SizeValue;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.unit.ByteSizeValue;
+import org.opensearch.rest.RestRequest;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Builds a grouped + aggregated view of a {@link Table} for {@code _cat} APIs. Grouping and
- * aggregation are both expressed entirely through the {@code h=} parameter: any bare column token
- * (e.g. {@code index}) is treated as a GROUP BY key, and any function token (e.g. {@code sum(docs)})
- * is treated as an aggregate over the grouped rows. This mirrors the SQL mental model
- * {@code SELECT index, sum(docs) ... GROUP BY index} without a separate {@code summarize=} parameter.
+ * Builds a grouped + aggregated view of a {@link Table} for {@code _cat} APIs. The view is requested with
+ * two explicit parameters:
+ * <ul>
+ *   <li>{@code group_by}: comma-separated columns to group by. Optional; without it the aggregates are
+ *   computed over all rows and a single row is returned.</li>
+ *   <li>{@code aggregate}: comma-separated {@code function(column)} entries, where function is one of
+ *   {@code sum}, {@code count}, {@code avg}, {@code min}, {@code max}. Required whenever the view is requested.</li>
+ * </ul>
+ * For example {@code GET _cat/shards?group_by=index&aggregate=count(shard),sum(store)}.
  *
- * <p>When {@code h=} contains no aggregation function the table is returned unchanged, so ordinary
- * {@code h=} listings behave exactly as they did before summarization existed.
+ * <p>The result has the group-by columns first, then the aggregates, each in the order given. Group-by columns are
+ * named by their canonical column name and keep the original column's aliases. Aggregates are named
+ * {@code function(canonical column)} with a lower-case function, so {@code SUM(d)} on a column {@code docs}
+ * becomes {@code sum(docs)}; the spelling the user typed is kept as an alias. The {@code h}, {@code s} and
+ * {@code limit} parameters then apply to this result like they do to any other table.
  *
- * <p>Supported functions: {@code sum}, {@code count}, {@code avg}, {@code min}, {@code max}.
- * Numeric types {@link Long}, {@link Integer}, {@link Short}, {@link Byte}, {@link ByteSizeValue},
- * {@link SizeValue}, {@link TimeValue} are preserved through aggregation so downstream rendering
- * with {@code bytes=}/{@code time=}/{@code size=} continues to work on aggregated values.
+ * <p>When neither parameter is present the table is not touched, so ordinary {@code _cat} requests behave
+ * exactly as they did before this view existed.
+ *
+ * <p>Numeric types {@link Long}, {@link Integer}, {@link Short}, {@link Byte}, {@link ByteSizeValue},
+ * {@link SizeValue}, {@link TimeValue} are preserved through aggregation so downstream rendering with
+ * {@code bytes=}/{@code time=}/{@code size=} continues to work on aggregated values.
  *
  * <p>The {@code avg} function computes {@code sum / count_of_non_null_values}; rows whose value is
  * null for a given aggregation column do not contribute to either the numerator or denominator
@@ -45,105 +58,111 @@ import java.util.regex.Pattern;
  */
 public final class TableSummarizer {
 
+    public static final String GROUP_BY_PARAM = "group_by";
+    public static final String AGGREGATE_PARAM = "aggregate";
+
     /** Matches function syntax like {@code sum(docs.count)}, {@code count(shard)}. Case-insensitive so {@code SUM(docs)} also matches. */
     private static final Pattern AGG_FUNC_PATTERN = Pattern.compile("^(sum|count|avg|min|max)\\((.+)\\)$", Pattern.CASE_INSENSITIVE);
 
     private TableSummarizer() {}
 
     /**
-     * Returns true if at least one token in the {@code h=} parameter is an aggregation function
-     * invocation like {@code sum(field)}. Used by callers that want to short-circuit upstream row
-     * construction when neither sort nor aggregation is requested.
+     * Returns true if the request asks for a grouped or aggregated view, that is if either {@code group_by} or
+     * {@code aggregate} is present. A request with only {@code group_by} is still "requested" so that
+     * {@link #parse(RestRequest)} can reject it with a clear error instead of silently returning a plain listing.
      */
-    public static boolean hasAggregation(String headersParam) {
-        if (headersParam == null || headersParam.isEmpty()) {
-            return false;
-        }
-        for (String header : Strings.splitStringByCommaToArray(headersParam)) {
-            if (AGG_FUNC_PATTERN.matcher(header.trim()).matches()) {
-                return true;
-            }
-        }
-        return false;
+    public static boolean isRequested(RestRequest request) {
+        return request.hasParam(GROUP_BY_PARAM) || request.hasParam(AGGREGATE_PARAM);
     }
 
     /**
-     * Build a summarized table by inferring grouping and aggregation from the {@code h=} parameter.
-     * Bare column tokens become GROUP BY keys; {@code func(field)} tokens become aggregates. Returns
-     * the original {@code table} unchanged when {@code hParam} is null/empty or contains no
-     * aggregation function (i.e. an ordinary listing was requested).
+     * Parses and validates the syntax of {@code group_by} / {@code aggregate}. Column names are not checked here
+     * because the table is not known yet; {@link #summarize(Table, Spec)} does that.
      *
-     * @param hParam value of the {@code h=} query parameter; may be null
+     * @return the parsed request, or {@code null} if neither parameter is present
+     * @throws IllegalArgumentException if the parameters are malformed (this maps to a 400)
      */
-    public static Table summarize(Table table, String hParam) {
-        if (hParam == null || hParam.isEmpty()) {
-            return table;
+    static Spec parse(RestRequest request) {
+        if (isRequested(request) == false) {
+            return null;
         }
+        return parse(request.param(GROUP_BY_PARAM), request.param(AGGREGATE_PARAM));
+    }
+
+    static Spec parse(String groupByParam, String aggregateParam) {
+        List<AggColumn> aggregates = new ArrayList<>();
+        for (String token : splitTokens(aggregateParam)) {
+            Matcher m = AGG_FUNC_PATTERN.matcher(token);
+            String field = m.matches() ? m.group(2).trim() : "";
+            if (field.isEmpty()) {
+                throw new IllegalArgumentException(
+                    "Invalid aggregate [" + token + "]. Expected function(column) where function is one of sum, count, avg, min, max"
+                );
+            }
+            aggregates.add(new AggColumn(m.group(1).toLowerCase(Locale.ROOT), field, token));
+        }
+        if (aggregates.isEmpty()) {
+            throw new IllegalArgumentException(
+                "[aggregate] must list at least one function such as count(column), and is required when [group_by] is set"
+            );
+        }
+        return new Spec(new ArrayList<>(new LinkedHashSet<>(splitTokens(groupByParam))), aggregates);
+    }
+
+    /** Splits a comma-separated parameter, trimming each token and skipping blank ones. */
+    private static List<String> splitTokens(String param) {
+        List<String> tokens = new ArrayList<>();
+        for (String token : Strings.splitStringByCommaToArray(param)) {
+            String t = token.trim();
+            if (t.isEmpty() == false) {
+                tokens.add(t);
+            }
+        }
+        return tokens;
+    }
+
+    /**
+     * Builds the grouped and aggregated table.
+     *
+     * @throws IllegalArgumentException if a group-by or aggregate column does not exist in the table
+     */
+    static Table summarize(Table table, Spec spec) {
         Map<String, String> aliasMap = table.getAliasMap();
-
-        // Split h= into group-by columns (bare tokens) and aggregation columns (func(field) tokens).
-        List<String> groupByTokens = new ArrayList<>();
-        List<AggColumn> aggColumns = new ArrayList<>();
-        for (String token : Strings.splitStringByCommaToArray(hParam)) {
-            String h = token.trim();
-            if (h.isEmpty()) {
-                continue;
-            }
-            Matcher m = AGG_FUNC_PATTERN.matcher(h);
-            if (m.matches()) {
-                String func = m.group(1).toLowerCase(Locale.ROOT);
-                String field = aliasMap.getOrDefault(m.group(2).trim(), m.group(2).trim());
-                aggColumns.add(new AggColumn(func, field, h));
-            } else {
-                groupByTokens.add(h);
-            }
-        }
-
-        // No aggregation requested => ordinary listing; return the table unchanged so that plain
-        // h= requests behave exactly as they did before summarization existed.
-        if (aggColumns.isEmpty()) {
-            return table;
-        }
-
-        // Resolve group-by field aliases to canonical names. The raw token is kept for the result
-        // header display name so it still matches the h= token during downstream column filtering.
-        String[] groupByFields = groupByTokens.toArray(new String[0]);
-        String[] resolvedGroupBy = new String[groupByFields.length];
-        for (int i = 0; i < groupByFields.length; i++) {
-            resolvedGroupBy[i] = aliasMap.getOrDefault(groupByFields[i], groupByFields[i]);
-        }
-
         Map<String, List<Table.Cell>> colMap = table.getAsMap();
 
-        // Validate that every referenced column exists in the table. Silently producing empty or
-        // misaligned output on a typo would be surprising — reject the request up-front with a
-        // clear error naming the offending token.
-        for (int i = 0; i < groupByFields.length; i++) {
-            if (colMap.containsKey(resolvedGroupBy[i]) == false) {
-                throw new IllegalArgumentException("Unknown column in h= (group-by): '" + groupByFields[i] + "'");
+        // Resolve aliases to canonical names and validate. Duplicates (by canonical name) collapse into the first.
+        Map<String, String> groupBy = new LinkedHashMap<>(); // canonical -> typed
+        for (String token : spec.groupBy) {
+            String canonical = aliasMap.getOrDefault(token, token);
+            if (colMap.containsKey(canonical) == false) {
+                throw new IllegalArgumentException("Unknown column in group_by: '" + token + "'");
             }
+            groupBy.putIfAbsent(canonical, token);
         }
-        for (AggColumn agg : aggColumns) {
-            if (colMap.containsKey(agg.field) == false) {
-                throw new IllegalArgumentException("Unknown column in h= aggregation " + agg.func + "(...): '" + agg.field + "'");
+        Map<String, ResolvedAgg> aggregates = new LinkedHashMap<>(); // canonical name -> aggregate
+        for (AggColumn agg : spec.aggregates) {
+            String field = aliasMap.getOrDefault(agg.field, agg.field);
+            if (colMap.containsKey(field) == false) {
+                throw new IllegalArgumentException("Unknown column in aggregate " + agg.func + "(...): '" + agg.field + "'");
             }
+            aggregates.computeIfAbsent(agg.func + "(" + field + ")", name -> new ResolvedAgg(name, agg.func, field)).typed.add(agg.typed);
         }
 
+        List<String> groupByFields = new ArrayList<>(groupBy.keySet());
+        List<ResolvedAgg> aggColumns = new ArrayList<>(aggregates.values());
         int rowCount = table.getRows().size();
 
         // Single-pass online aggregation. For each row we resolve its group key and update the
         // running aggregator for every (group, aggColumn) pair. Memory is O(G * C) rather than
-        // O(N) for the row-index lists used by the previous two-pass design.
+        // O(N) for the row-index lists used by a two-pass design.
         Map<GroupKey, Aggregator[]> groups = new LinkedHashMap<>();
         for (int row = 0; row < rowCount; row++) {
-            // Build key from group-by values (uses List.equals/hashCode — collision-free).
-            List<Object> keyValues = new ArrayList<>(resolvedGroupBy.length);
-            for (String gb : resolvedGroupBy) {
-                List<Table.Cell> col = colMap.get(gb);
-                keyValues.add(col != null ? col.get(row).value : null);
+            // Build key from group-by values (uses List.equals/hashCode: collision-free).
+            List<Object> keyValues = new ArrayList<>(groupByFields.size());
+            for (String gb : groupByFields) {
+                keyValues.add(colMap.get(gb).get(row).value);
             }
-            GroupKey key = new GroupKey(keyValues);
-            Aggregator[] aggregators = groups.computeIfAbsent(key, k -> {
+            Aggregator[] aggregators = groups.computeIfAbsent(new GroupKey(keyValues), k -> {
                 Aggregator[] arr = new Aggregator[aggColumns.size()];
                 for (int i = 0; i < arr.length; i++) {
                     arr[i] = new Aggregator();
@@ -151,22 +170,18 @@ public final class TableSummarizer {
                 return arr;
             });
             for (int i = 0; i < aggColumns.size(); i++) {
-                AggColumn agg = aggColumns.get(i);
-                List<Table.Cell> col = colMap.get(agg.field);
-                Object val = col != null ? col.get(row).value : null;
-                aggregators[i].add(val);
+                aggregators[i].add(colMap.get(aggColumns.get(i).field).get(row).value);
             }
         }
 
-        // Build the result table.
+        // Build the result table: group-by columns first, then aggregates, each in the order given.
         Table result = new Table();
         result.startHeaders();
-        for (int g = 0; g < resolvedGroupBy.length; g++) {
-            Table.Cell origHeader = table.getHeaderMap().get(resolvedGroupBy[g]);
-            result.addCell(groupByFields[g], copyHeaderAttrString(origHeader, groupByFields[g]));
+        for (String gb : groupByFields) {
+            result.addCell(gb, copyHeaderAttrString(table.getHeaderMap().get(gb), gb));
         }
-        for (AggColumn agg : aggColumns) {
-            result.addCell(agg.displayName, "text-align:right;desc:" + agg.func + "(" + agg.field + ")");
+        for (ResolvedAgg agg : aggColumns) {
+            result.addCell(agg.name, aggregateHeaderAttrString(agg));
         }
         result.endHeaders();
 
@@ -185,9 +200,48 @@ public final class TableSummarizer {
     }
 
     /**
+     * Rejects an {@code h} parameter that names a column which is not in the aggregated result. Without this check
+     * the display code silently skips names it cannot find, so {@code group_by=index&aggregate=sum(docs)&h=index,shard}
+     * would return a table without {@code shard} and no hint why. Wildcard patterns are not checked: they expand
+     * against the aggregated columns like they do for any other table. The names are compared the same way the
+     * display code does (exact column name or alias, no trimming).
+     *
+     * @param summarized the table returned by {@link #summarize(Table, Spec)}
+     * @param hParam     the raw {@code h} parameter, may be null
+     * @throws IllegalArgumentException if a name in {@code h} is not a column of the aggregated table
+     */
+    static void validateDisplayHeaders(Table summarized, String hParam) {
+        if (hParam == null) {
+            return;
+        }
+        Set<String> known = new LinkedHashSet<>();
+        List<String> columns = new ArrayList<>();
+        for (Table.Cell header : summarized.getHeaders()) {
+            known.add(header.value.toString());
+            columns.add(header.value.toString());
+            String aliases = header.attr.get("alias");
+            if (aliases != null) {
+                known.addAll(List.of(Strings.splitStringByCommaToArray(aliases)));
+            }
+        }
+        for (String token : Strings.splitStringByCommaToArray(hParam)) {
+            if (Regex.isSimpleMatchPattern(token) == false && known.contains(token) == false) {
+                throw new IllegalArgumentException(
+                    "Column ["
+                        + token
+                        + "] in h is not in the aggregated result. When group_by or aggregate is used, h can only select from: "
+                        + String.join(", ", columns)
+                );
+            }
+        }
+    }
+
+    /**
      * Reconstructs a safe attribute string for the result header that mirrors the original column's
-     * metadata. Values containing the attribute delimiters ({@code ;} or {@code :}) are skipped to
-     * avoid producing a string that cannot be parsed back correctly.
+     * metadata. Values containing the attribute delimiters ({@code ;} or {@code :}) are sanitized to
+     * avoid producing a string that cannot be parsed back correctly. {@code default} and {@code sibling} are
+     * not copied: a column that is hidden by default in the full table is still part of an aggregated
+     * result when the user asked to group by it, and the sibling columns are not part of the result.
      */
     // Package-private for direct unit testing (delimiter-in-value handling).
     static String copyHeaderAttrString(Table.Cell origHeader, String fallbackDesc) {
@@ -198,7 +252,7 @@ public final class TableSummarizer {
         boolean hasDesc = false;
         for (Map.Entry<String, String> e : origHeader.attr.entrySet()) {
             String v = e.getValue();
-            if (v == null) continue;
+            if (v == null || "default".equals(e.getKey()) || "sibling".equals(e.getKey())) continue;
             // Attribute strings are parsed on ';' and ':', so delimiter chars inside a value would
             // otherwise mangle the parse. Replace them with spaces so the attribute survives the
             // round-trip (the desc text is slightly reformatted; alias/text-align are unaffected
@@ -217,15 +271,56 @@ public final class TableSummarizer {
         return sb.toString();
     }
 
+    /** Header attributes of an aggregate column: right aligned, described, and aliased by the spellings the user typed. */
+    private static String aggregateHeaderAttrString(ResolvedAgg agg) {
+        StringBuilder sb = new StringBuilder("text-align:right;desc:").append(agg.func).append('(').append(agg.field).append(')');
+        List<String> aliases = new ArrayList<>();
+        for (String typed : agg.typed) {
+            if (typed.equals(agg.name) == false && typed.indexOf(';') < 0 && typed.indexOf(':') < 0 && typed.indexOf(',') < 0) {
+                aliases.add(typed);
+            }
+        }
+        if (aliases.isEmpty() == false) {
+            sb.append(";alias:").append(String.join(",", aliases));
+        }
+        return sb.toString();
+    }
+
+    /** A syntax-validated group_by / aggregate request: typed (not yet resolved) column names. */
+    static final class Spec {
+        final List<String> groupBy;
+        final List<AggColumn> aggregates;
+
+        Spec(List<String> groupBy, List<AggColumn> aggregates) {
+            this.groupBy = groupBy;
+            this.aggregates = aggregates;
+        }
+    }
+
+    /** An aggregate as typed by the user: lower-case function, column as typed, and the whole token as typed. */
     static final class AggColumn {
         final String func;
         final String field;
-        final String displayName;
+        final String typed;
 
-        AggColumn(String func, String field, String displayName) {
+        AggColumn(String func, String field, String typed) {
             this.func = func;
             this.field = field;
-            this.displayName = displayName;
+            this.typed = typed;
+        }
+    }
+
+    /** An aggregate resolved against a table: canonical column and result column name, plus every spelling typed for it. */
+    private static final class ResolvedAgg {
+        final String name;
+        final String func;
+        final String field;
+        final Set<String> typed = new LinkedHashSet<>();
+
+        ResolvedAgg(String name, String func, String field) {
+            this.name = name;
+            this.func = func;
+            this.field = field;
         }
     }
 
@@ -293,7 +388,7 @@ public final class TableSummarizer {
             switch (function) {
                 case "count":
                     // SQL semantics: COUNT(field) excludes null values. Use countAll if the caller
-                    // wants row count regardless of null (not currently exposed through h=).
+                    // wants row count regardless of null (not currently exposed).
                     return countNonNull;
                 case "sum":
                     return sum == null ? null : formatValue(sum, sampleValue);

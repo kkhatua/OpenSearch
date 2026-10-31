@@ -73,14 +73,18 @@ public class RestTable {
 
     public static RestResponse buildResponse(Table table, RestChannel channel) throws Exception {
         RestRequest request = channel.request();
-        // Non-consuming read: buildDisplayHeaders later calls request.param("h") to mark it
-        // consumed. Accessing the raw map here avoids reordering param-consumption semantics.
-        String hParam = request.params().get("h");
-        // Grouping/aggregation is inferred from h=: if any h= token is an aggregation function
-        // (e.g. sum(docs)), summarize the table; bare tokens are treated as GROUP BY keys. Plain
-        // h= listings (no functions) are returned unchanged by TableSummarizer.summarize.
-        if (TableSummarizer.hasAggregation(hParam)) {
-            table = TableSummarizer.summarize(table, hParam);
+        // group_by / aggregate replace the table with its grouped and aggregated view. h, s and limit are
+        // then applied to that view like to any other table.
+        TableSummarizer.Spec summary = TableSummarizer.parse(request);
+        if (summary != null) {
+            if (table.getPageToken() != null) {
+                // A page is only part of the data, so aggregating it would silently produce wrong totals
+                throw new IllegalArgumentException("[group_by] and [aggregate] are not supported on paginated APIs");
+            }
+            table = TableSummarizer.summarize(table, summary);
+            // Non-consuming read: buildDisplayHeaders later calls request.param("h") to mark it
+            // consumed. Accessing the raw map here avoids reordering param-consumption semantics.
+            TableSummarizer.validateDisplayHeaders(table, request.params().get("h"));
         }
         MediaType mediaType = getXContentType(request);
         if (mediaType != null) {
